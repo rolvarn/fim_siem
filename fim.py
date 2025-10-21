@@ -6,7 +6,7 @@ import threading
 #os.walk() fonksiyonu ile içeriğini alacağımız dosya yolunu veriyoruz.
 monitoring_path = Path.home()
 
-#Erişim zamanı kontrolü ile erişilen dosyaları bulacağımız için program açıldığında ilk saati kaydediyoruz. 
+#Erişim zamanı kontrolü ile erişilen dosyaları bulacağımız için erişim saatini 5 saniyede bir güncelleyen bir fonksiyon oluşturuyoruz. 
 start_time = 0
 def set_time():
     global start_time

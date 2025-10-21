@@ -6,17 +6,8 @@ import threading
 #os.walk() fonksiyonu ile içeriğini alacağımız dosya yolunu veriyoruz.
 monitoring_path = Path.home()
 
-#Erişim zamanı kontrolü ile erişilen dosyaları bulacağımız için erişim saatini 5 saniyede bir güncelleyen bir fonksiyon oluşturuyoruz. 
-start_time = 0
-def set_time():
-    global start_time
-    while True:
-        analyzing_time = time.time()
-        start_time = analyzing_time
-        time.sleep(5)        
-        
-#Fonksiyonun arkaplanda sürekli çalışması için threading kütüphanesi ile ayrı bir thread olarak çalıştırıyoruz.
-threading.Thread(target=set_time(),daemon=True).start
+#Erişim zamanı kontrolü ile erişilen dosyaları bulacağımız için erişim saatini program başlayınca alıyoruz.
+start_time = time.time()
 
 #Aynı dosyayı tekrardan ekrana yazdırmamak için hafıza değişkeni oluşturuyoruz.
 #Bu değişkene dosya isimlerini ve dosya yollarını ekleyip tekrardan ekrana aynı dosyayı yazdırmamak için. 

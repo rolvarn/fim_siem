@@ -90,8 +90,8 @@ def setting_walking_list():
                 if doc.lower().endswith(ext):
                     break
             else:
-                leyn= os.path.join(root,doc)
-                walking_doc_list.append(leyn)
+                not_ignored = os.path.join(root,doc)
+                walking_doc_list.append(not_ignored)
 
         #os.walk() fonksiyonun generator (jeneratör) özelliği olduğu için daha sonradan asıl dosya yollarını gezineceğimiz dizine ekliyoruz
         walking_dir_list.append(root)

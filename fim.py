@@ -5,7 +5,7 @@ import time
 import threading
 import csv
 
-#os.walk() fonksiyonu ile içeriğini alacağımız dosya yolunu veriyoruz.
+#İçeriğini alacağımız dosya yolunu veriyoruz.
 monitoring_path = Path.home()
 
 #Aynı dosyayı tekrardan ekrana yazdırmamak için hafıza değişkeni oluşturuyoruz.

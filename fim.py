@@ -30,7 +30,7 @@ IGNORE_PATH = {
     'System Volume Information',
 }
 
-IGNORE_EXT = {
+IGNORE_EXT = {  
     '.sys',
     '.pif',
     '.com',
@@ -106,7 +106,8 @@ def check_integrity():
             del integrity_database[doc]
         time.sleep(10)
 
-#Eski dosyaları tekrardan kontrol edebilmemizi sağlayan fonksiyon. Memory'yi 30 saniyede bir sıfırlayarak aynı dosyayı tekrardan kontrol etmemizi sağlar.
+#Eski dosyaları tekrardan kontrol edebilmemizi sağlayan fonksiyon. 
+#Memory'yi 30 saniyede bir sıfırlayarak aynı dosyayı tekrardan kontrol etmemizi sağlar.
 def memory_clear():
     while True:
         memory.clear()

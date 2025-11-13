@@ -2,184 +2,183 @@ import datetime
 import os
 from pathlib import Path
 import time
-import threading
 import csv
 
-#İçeriğini alacağımız dosya yolunu veriyoruz.
+# İzlenecek dosya yolu olan home path'i ayarlıyoruz.
 monitoring_path = Path.home()
 
-#Aynı dosyayı tekrardan ekrana yazdırmamak için hafıza değişkeni oluşturuyoruz.
-memory = set()
 
-#Gereksiz log oluşumunu engellemek adına bazı klasörler ve dosya uzantıları için dışlama ekliyoruz.
+# Dışlama yapılacak klasör - dosya uzantıları 
 IGNORE_PATH = {
-    'AppData',
-    'Windows',
-    'Program Files',
-    'Program Files (x86)',
-    'ProgramData',
-    '.vscode',
-    '__pycache__',
-    '.git',
-    'node_modules',
-    '.cache',
-    '.config',
-    'Microsoft',
-    'NVIDIA',
-    '$Recycle.Bin',
-    'System Volume Information',
+    'AppData', 'Windows', 'Program Files', 'Program Files (x86)', 'SendTo','Recent','Local Settings','Cookies','Application Data','NetHood',
+    'ProgramData', '.vscode', '__pycache__', '.git', 'node_modules', 
+    '.cache', '.config', 'Microsoft', 'NVIDIA', '$Recycle.Bin', 
+    'System Volume Information'
 }
 
 IGNORE_EXT = {  
-    '.sys',
-    '.pif',
-    '.com',
-    '.scr',
-    '.log',
-    '.ini',
-    '.cfg',
-    '.json',
-    '.xml',
-    '.dat',
-    '.db',
-    '.bin',
-    '.tmp',
-    '.temp',
-    '.cache',
-    '.bak',
-    '.lnk',
-    'thumbs.db',
-    '.pf',
-    '.pfl'
+    '.sys', '.pif', '.com', '.scr', '.log', '.ini', '.cfg', '.json', 
+    '.xml', '.dat', '.db', '.bin', '.tmp', '.temp', '.cache', '.bak', 
+    '.lnk', 'thumbs.db', '.pf', '.pfl'
 }
 
-#setting_walkin_list() fonksiyonu ile elde ettiğimiz dosya ve dizinleri saklayacağımız listeleri oluşturuyoruz.
+# Gezilecek dizin ve dosyaların listesi.
 walking_doc_list = []
 walking_dir_list = []
 
-#Dosya boyutunu saklayacağımız sözlük
+# Bütünlük kontrolü yapılacak olan database
 integrity_database = {}
 
-#Son erişim zamanına göre dosyalara erişilip erişilmediğini anlamak için sürekli kendini güncelleyen anlık saat fonksiyonu oluşturuyoruz.
-start_time = 0
-def set_time():
-    global start_time
-    while True:
-        start_time = time.time()
-        time.sleep(30) #30 saniyede bir anlık saati güncelleyecek
+# Aynı dosyayı tekrardan ekrana yazdırmamak için oluşturulan memory değişkeni.
+memory = set() 
 
-#Dosyaların Pathlerini ve boyutlarını integrity_database sözlüğüne ekleyecek olan fonksiyon
-def add_db(doc_path):
+def log_warnings(time_str, message): # Bütünlük kontrolü sonucu çıktıları CSV dosyasına kaydeder.
+    with open('warnings.csv', mode="a", newline='', encoding='utf-8') as log:
+        csv.writer(log).writerow([time_str, message])
+
+def write_csv_log(path, doc_name): # Dosyalar izlendiği sırada dizinlerin ve dosyaların pathlerini kaydeder.
+    with open('log.csv', mode="a", newline='', encoding='utf-8') as log:
+        csv.writer(log).writerow([path, doc_name])
+
+def add_db(doc_path): # Integrity databaseye bütünlük kontrolü yapabilmesi için verileri ekler.
     try:
-        doc_size = os.path.getsize(doc_path) #Dosyanın boyutunu al
-        integrity_database[doc_path] = doc_size #Dosyanın boyutunu karşısına ekle
+        integrity_database[doc_path] = os.path.getsize(doc_path)
     except:
-        print("An error occured while adding to database.")
+        pass
 
-#check_integrity() fonksiyonunda oluşan logların temiz bir şekilde gözükmesi için csv dosyasına kaydeden fonksiyon
-def log_warnings(time,message):
-    log_file_name = 'warnings.csv'
-    with open(log_file_name,mode="a", newline='',encoding='utf-8') as log:
-        log_writer = csv.writer(log)
-        log_writer.writerow([time,message])
+def setting_walking_list(): # İçerisinde gezinilecek dosya ve dizinleri bulan fonksiyon.
 
-#Dosyaların değiştirildi mi, silindi mi gibi işlemlerini izleyeceğimiz fonksiyon. 10 saniyede bir çalışacak.
-def check_integrity():
-    while not integrity_database: #Eğer integrity_database boş ise çalışma, 15 saniye bekle.
-        time.sleep(10)
-    while True: #integrity_database() 0'dan farklı olursa dosyaları kontol edecek olan döngü başlıyor.
-        files_to_be_deleted = [] #Eğer bir dosyaya ulaşılamazsa bu listeye kaydedilecek ve databaseden silinecek.
-        for doc, old_size in integrity_database.items():
-            if os.path.exists(doc):
-                new_size = os.path.getsize(doc)
-                if old_size != new_size: #Eğer eski boyutu ile yeni boyutu farklıysa dosya değiştirildi diye log yazılacak.
-                    w_message = f"🔥 File size changed. -> {doc} (Old: {old_size}, New: {new_size})"
-                    time_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    log_warnings(time_now, w_message)
-                    integrity_database[doc] = new_size
-            else:#Eğer dosyaya ulaşılamazsa dosya silindi veya taşındı uyarısı verilecek ve databaseden silinecek.
-                w_message = f"❌ File was deleted or moved. -> {doc}"
-                time_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                log_warnings(time_now, w_message)
-                files_to_be_deleted.append(doc)
-        for doc in files_to_be_deleted: #Yukarıda files_to_be_deleted adında oluşturduğumuz listedeki elemanları databaseden siliyoruz.
-            del integrity_database[doc]
-        time.sleep(10)
+    print("--- 🔄 Scanning Files... ---")
+    
+    # Güncelleme mekanizması olacağı için geçici dosyalar oluşturuyoruz.
+    # Daha sonra bunları ana dosyalar eşitleyeceğiz.
+    temp_docs = [] 
+    temp_dirs = []
 
-#Eski dosyaları tekrardan kontrol edebilmemizi sağlayan fonksiyon. 
-#Memory'yi 30 saniyede bir sıfırlayarak aynı dosyayı tekrardan kontrol etmemizi sağlar.
-def memory_clear():
-    while True:
-        memory.clear()
-        time.sleep(30)
+    # Dizinleri ve dosyaları dışlamalara dikkat ederek gezen fonksiyon.
+    def recursive_scan(current_path):
+        try:
+            for entry in current_path.iterdir():
+                if entry.is_dir(): # Veri dizin mi?
+                    if entry.name not in IGNORE_PATH: # Dosya ismi dışlamalar klasöründe var mı?
 
-#Erişilen dosyaların ve dizinlerin düzenli gözükmesi için bir CSV dosyasına kaydeden fonksiyon.
-def write_csv_log(path,doc_name):
-    log_file_name = 'log.csv'
-    with open(log_file_name,mode="a", newline='',encoding='utf-8') as log:
-        log_writer = csv.writer(log)
-        log_writer.writerow([path,doc_name])
+                        full_path = str(entry) + os.sep 
+                        temp_dirs.append(full_path) 
+                        recursive_scan(entry) # Burada dizinin altındaki içeriği kaçırmamak için tekrar aynı fonksiyon ile içeriğine ulaşılır.
+                
+                elif entry.is_file(): # Veri dosya mı?
 
-#Belirtilen dizin altındaki tüm dosya dizinleri dışlamalara dikkat ederek listelere ekleyen fonksiyon.
-def setting_walking_list(path):
-    try:
-        for entry in path.iterdir():
-            if entry.is_dir():
-                if entry.name not in IGNORE_PATH:
-                    walking_dir_list.append(str(entry) + os.sep)
-                    setting_walking_list(entry)
-            elif entry.is_file():
-                for ext in IGNORE_EXT:
-                    if entry.name.lower().endswith(ext):
-                        break
-                else:
-                    walking_doc_list.append(str(entry))
-    except:
-        print("Fonksiyon çalışırken bir sıkıntı çıkarsa bu mesaj gözükecek")
+                    file_path = str(entry)
+                    is_ignored = False
 
-#Dosyaların ve dizinlerin erişim zamanını kontrol eden fonksiyon.
-def file_monitor():
-    while True:
-        for dir in walking_dir_list:
-            if dir not in memory: #Dizin listesindeki elemanlar memory değişkeni içerisinde yoksa son erişim zamanını alır ve eskisiyle karşılaştırır.
-                try:
-                    access_time_path = os.path.getatime(dir)
-                    if access_time_path > start_time:
-                        memory.add(dir)
-                        write_csv_log(dir,"")
-                        print(dir)
-                except:
-                    print("Path not found.")
-                    try:
-                        walking_dir_list.remove(dir)
-                    except:
-                        print("Directory can't removed!")
+                    for ext in IGNORE_EXT: # Uzantısı dışlama içeriyor mu?
 
-        for doc in walking_doc_list:
+                        if entry.name.lower().endswith(ext):
+                            is_ignored = True
+                            break
+                    
+                    if not is_ignored:
+                        temp_docs.append(file_path) 
+                    
+                    if file_path not in integrity_database: # Eğer integrity_database'inde yoksa ekle.
+                        add_db(file_path)
+
+        except PermissionError:
+            pass
+        except Exception as e:
+            print(f"ERROR: {e}")
+
+    recursive_scan(monitoring_path) # Dosya dizin taramasını başlat.
+    
+    # Global listeleri güncelle.
+    global walking_doc_list, walking_dir_list
+    walking_doc_list = temp_docs
+    walking_dir_list = temp_dirs
+    print(f"--- ✅ Scan Completed. File founded: {len(walking_doc_list)} ---")
+
+def check_integrity(): # Dosya bütünlüğü kontrol eden fonskiyon.
+    if not integrity_database:
+        return # Veritabanı boşsa işlem yapma.
+
+    files_to_delete = [] # Silinen dosyaları listeden kaldırmak için oluşturulan geçici liste.
+    
+    for doc, old_size in integrity_database.items():
+        if os.path.exists(doc): # Dosya var mı?
+            new_size = os.path.getsize(doc)
+            if old_size != new_size: # Dosyanın eski boyutu yeni boyutundan farklı mı?
+                msg = f"🔥 File size changed. -> {doc}"
+                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                log_warnings(now, msg)
+                print(msg)
+                integrity_database[doc] = new_size
+        else:
+            msg = f"❌ File deleted/moved. -> {doc}"
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_warnings(now, msg)
+            print(msg)
+            files_to_delete.append(doc)
+            
+    for doc in files_to_delete: # Silinecek dosyaları databaseden sil.
+        del integrity_database[doc]
+
+def file_monitoring(): # Dosyaların son erişim zamanını kontrol eden fonksiyon.
+    # Klasörler
+    for dir_path in walking_dir_list:
+        if dir_path not in memory:
             try:
-                if doc not in memory: #Dosya listesindeki elemanlar memory değişkeni içerisinde yoksa son erişim zamanını alır ve eskisiyle karşılaştırır.
-                    access_time_doc = os.path.getatime(doc)
-                    if access_time_doc > start_time:
-                        memory.add(doc)
-                        folder_of_doc = os.path.dirname(doc)
-                        folder_of_doc_full = folder_of_doc+os.sep
-                        print(folder_of_doc+os.sep+" "+ doc)
-                        if doc not in integrity_database:
-                            add_db(doc)
-                        write_csv_log(folder_of_doc_full,doc)
+                if os.path.getatime(dir_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
+                    memory.add(dir_path)
+                    write_csv_log(dir_path, "")
+                    print(f"ACCESS: {dir_path}")
             except:
-                try:
-                    walking_doc_list.remove(doc) #Dosyayı bulamazsa siler.
-                except:
-                    print("File can't removed!")
-        time.sleep(5)
+                pass
+
+    # Dosyalar
+    for doc_path in walking_doc_list:
+        if doc_path not in memory:
+            try:
+                if os.path.getatime(doc_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
+                    memory.add(doc_path)
+                    print(f"ACCESS: {doc_path}")
+                    write_csv_log(os.path.dirname(doc_path), doc_path)
+                    
+                    if doc_path not in integrity_database: # Eğer veritabanında yoksa ekle
+                        add_db(doc_path)
+            except:
+                pass
+
+
 
 if __name__ == "__main__":
     try:
-        setting_walking_list(monitoring_path)
-        threading.Thread(target=memory_clear, daemon=True).start()
-        threading.Thread(target=set_time, daemon=True).start()
-        threading.Thread(target=check_integrity,daemon=True).start()
-        file_monitor()
+        # Başlangıçta bir kez tarama yap
+        setting_walking_list()
+        
+        start_time = time.time()
+        last_scan_time = time.time()
+        SCAN_INTERVAL = 60  # Listeyi kaç saniyede bir güncellesin?
+        
+        while True: #Sürekli çalışan sistem.
+            current_time = time.time() #Anlık saati al.
+            
+            # Güncelleme zamanı geldi mi diye kontrol et, geldiyse listeyi güncelle.
+            if current_time - last_scan_time > SCAN_INTERVAL:
+                setting_walking_list()
+                last_scan_time = current_time
+                
+                # Memory temizliği yap.
+                memory.clear() 
+                print("--- Memory Cleaned ---")
+                start_time = time.time() # Temizlik sonrası tekrardan aynı dosyaları ekrana yazdırmamak için saati güncelle.
+
+            # Dosyaları İzle (Her döngüde çalışır)
+            file_monitoring()
+            
+            # Bütünlüğü Kontrol Et (Her döngüde çalışır)
+            check_integrity()
+            
+            # Dinlen
+            time.sleep(5)
+
     except KeyboardInterrupt:
-        print("Quitting...")
+        print("Shutting down...")

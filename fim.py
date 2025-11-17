@@ -1,4 +1,4 @@
-import datetime, os, time, csv, socket, platform
+import datetime, os, time, csv, socket, platform, tempfile
 from pathlib import Path
 # YENİ EKLENEN IMPORTLAR
 from watchdog.observers import Observer
@@ -32,6 +32,7 @@ integrity_database = {}
 
 # Aynı dosyayı tekrardan ekrana yazdırmamak için oluşturulan memory değişkeni.
 memory = set() 
+
 # Bilgisayarın adını ve IP'sini alan değişkenler
 PC_NAME = platform.node() # veya socket.gethostname()
 PC_IP = socket.gethostbyname(socket.gethostname())
@@ -43,20 +44,18 @@ LOG_HEADERS = [
     "Machine Name", "IP Address"
 ]
 
-# Tüm logların yazılacağı ana dosyanın adı
-MASTER_LOG_FILE = 'master_log.csv'
 
-# --- BÖLÜM 2: SİZİN FONKSİYONLARINIZ (check_integrity GERİ DÖNDÜ) ---
+MASTER_LOG_FILE = os.path.join('master_log.csv')
 
-# initialize_log (DEĞİŞİKLİK YOK)
 def initialize_log():
     if not os.path.exists(MASTER_LOG_FILE):
         with open(MASTER_LOG_FILE, mode="w", newline='', encoding='utf-8') as log:
             writer = csv.writer(log)
             writer.writerow(LOG_HEADERS)
 
-# write_master_log (DEĞİŞİKLİK YOK)
-def write_master_log(event_type, path):
+# Log yazan fonksiyon
+# Log yazan fonksiyon
+def write_master_log(event_type, path, obj_type_hint=None): # <-- DEĞİŞİKLİK: 'obj_type_hint' eklendi
     obj_type = "N/A"
     size = 0
     ctime = "N/A"
@@ -73,8 +72,16 @@ def write_master_log(event_type, path):
             mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
         except:
             pass
-    elif event_type == "DELETED" or event_type == "MOVED (Source)" or event_type == "DELETED/MOVED":
-        obj_type = "FILE/DIR (Deleted/Moved)"
+    
+    # --- DEĞİŞİKLİK: 'elif' bloğu güncellendi ---
+    elif event_type == "DELETED" or event_type == "MOVED (Source)":
+        # 'os.path.exists' false döndüğü için, event'ten gelen ipucunu kullan
+        if obj_type_hint:
+            obj_type = obj_type_hint
+        else:
+            # (Eski) İstenmeyen duruma geri dön
+            obj_type = "FILE/DIR (Deleted/Moved)"
+    # --- DEĞİŞİKLİK SONU ---
 
     log_entry = [
         datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -92,14 +99,16 @@ def write_master_log(event_type, path):
     except:
         pass
 
-# add_db (DEĞİŞİKLİK YOK)
+
+# Gelen dosyaları databaseye alan fonksiyon
 def add_db(doc_path):
     try:
-        integrity_database[doc_path] = os.path.getsize(doc_path)
+        # DEĞİŞİKLİK: Boyut yerine 'modification time' (mtime) kaydet
+        integrity_database[doc_path] = os.path.getmtime(doc_path)
     except:
         pass
 
-# setting_walking_list (DEĞİŞİKLİK YOK)
+# setting_walking_list 
 def setting_walking_list():
     print("--- 🔄 Scanning Files... ---")
     temp_docs = [] 
@@ -148,32 +157,31 @@ def check_integrity_garbage_collector():
 
     files_to_delete = []
     
-    # 'list()' ile kopyasını alıyoruz, böylece döngüde veritabanını değiştirebiliriz
-    for doc, old_size in list(integrity_database.items()):
+    # 'list()' ile kopyasını alıyoruz...
+    # DEĞİŞİKLİK: 'old_size' yerine 'old_mtime'
+    for doc, old_mtime in list(integrity_database.items()):
         try:
             if os.path.exists(doc):
-                # Dosya var. Boyutu değişmiş mi? (Watchdog kaçırmış olabilir)
-                new_size = os.path.getsize(doc)
-                if old_size != new_size:
+                # Dosya var. Değiştirilme zamanı değişmiş mi?
+                # DEĞİŞİKLİK: 'getsize()' yerine 'getmtime()'
+                new_mtime = os.path.getmtime(doc)
+                if old_mtime != new_mtime:
                     print(f"🧹 (GC) MODIFIED: {doc}")
                     write_master_log("MODIFIED", doc)
-                    integrity_database[doc] = new_size
+                    # DEĞİŞİKLİK: Yeni 'mtime' ile güncelle
+                    integrity_database[doc] = new_mtime
             else:
-                # Dosya yok. Watchdog bunu (veya ana klasörünü) zaten loglamış olmalı.
-                # Biz sadece veritabanını temizlemek için listeye ekliyoruz.
+                # Dosya yok...
                 files_to_delete.append(doc)
                 
         except Exception:
-            # İzin hatası vb. olursa, veritabanından kaldır
             files_to_delete.append(doc)
             
-    # Silinecek dosyaları veritabanından kaldır
+    # Silinecek dosyaları veritabanından kaldır...
     for doc in files_to_delete:
         if doc in integrity_database:
             try:
-                # SESSİZCE SİL. Loglamıyoruz, çünkü watchdog ana dizini logladı.
                 del integrity_database[doc]
-                # print(f"🧹 (GC) Cleaned up: {doc}") # Debug için açılabilir
             except KeyError:
                 pass
 
@@ -225,10 +233,11 @@ class MyEventHandler(FileSystemEventHandler):
     """
     
     def on_created(self, event):
+        # (Bu fonksiyonda değişiklik yok, olduğu gibi kalabilir)
         if is_ignored(event.src_path): return
             
         print(f"✅ (WD) CREATED: {event.src_path}")
-        write_master_log("CREATED", event.src_path)
+        write_master_log("CREATED", event.src_path) 
         if not event.is_directory:
             add_db(event.src_path)
 
@@ -236,42 +245,73 @@ class MyEventHandler(FileSystemEventHandler):
         """'Shift+Delete' (kalıcı silme) olayını yakalar."""
         if is_ignored(event.src_path): return
             
+        # --- DEĞİŞİKLİK BURADA ---
+        obj_type_hint = ""
+        if event.is_directory:
+            # Watchdog eminse (True), biz de eminiz.
+            obj_type_hint = "DIRECTORY"
+        else:
+            # Watchdog "Dosya" dedi (False).
+            # Uzantısını kontrol edelim.
+            _root, ext = os.path.splitext(event.src_path)
+            if not ext:
+                # Uzantı yoksa (örn: "yeni dizin"), bu bir DİZİN'dir.
+                obj_type_hint = "DIRECTORY"
+            else:
+                # Uzantı varsa (örn: "test.txt"), bu bir DOSYA'dır.
+                obj_type_hint = "FILE"
+        # --- DEĞİŞİKLİK SONU ---
+
         print(f"❌ (WD) DELETED: {event.src_path}")
-        write_master_log("DELETED", event.src_path)
+        write_master_log("DELETED", event.src_path, obj_type_hint=obj_type_hint)
         
         if event.src_path in integrity_database:
             try: del integrity_database[event.src_path]
             except KeyError: pass
 
     def on_modified(self, event):
+        # (Bu fonksiyonda değişiklik yok, olduğu gibi kalabilir)
         if is_ignored(event.src_path): return
         if event.is_directory: return
-            
-        print(f"🔥 (WD) MODIFIED: {event.src_path}")
-        write_master_log("MODIFIED", event.src_path)
         
         try:
-            integrity_database[event.src_path] = os.path.getsize(event.src_path)
+            new_mtime = os.path.getmtime(event.src_path)
+            if event.src_path in integrity_database:
+                old_mtime = integrity_database[event.src_path]
+                if new_mtime == old_mtime:
+                    return 
+            
+            print(f"🔥 (WD) MODIFIED: {event.src_path}")
+            write_master_log("MODIFIED", event.src_path)
+            integrity_database[event.src_path] = new_mtime
         except:
-            pass 
+            pass
 
     def on_moved(self, event):
         """'Delete' (Çöp Kutusu) veya normal taşımayı yakalar."""
         src_is_ignored = is_ignored(event.src_path)
         dest_is_ignored = is_ignored(event.dest_path)
 
+        # --- DEĞİŞİKLİK BURADA (on_deleted ile aynı mantık) ---
+        obj_type_hint = ""
+        if event.is_directory:
+            obj_type_hint = "DIRECTORY"
+        else:
+            _root, ext = os.path.splitext(event.src_path)
+            if not ext:
+                obj_type_hint = "DIRECTORY"
+            else:
+                obj_type_hint = "FILE"
+        # --- DEĞİŞİKLİK SONU ---
+
         # 1. DURUM: Çöp Kutusuna Taşıma ('Delete' tuşu)
         if not src_is_ignored and dest_is_ignored:
-            print(f"❌ (WD) DELETED (Moved to Recycle Bin): {event.src_path}")
-            write_master_log("DELETED", event.src_path) 
+            print(f"❌ DELETED (Moved to Recycle Bin): {event.src_path}")
+            write_master_log("DELETED", event.src_path, obj_type_hint=obj_type_hint) 
             
             if event.src_path in integrity_database:
                 try: del integrity_database[event.src_path]
                 except KeyError: pass
-            
-            # ÖNEMLİ: Eğer silinen bir DİZİN ise, içindekiler hala
-            # veritabanındadır. Bunları 'check_integrity_garbage_collector'
-            # fonksiyonu periyodik olarak temizleyecektir.
             return
 
         # 2. DURUM: Çöp Kutusundan Geri Alma
@@ -289,7 +329,10 @@ class MyEventHandler(FileSystemEventHandler):
         # 4. DURUM: Normal taşıma (örn: Masaüstü -> Belgelerim)
         else:
             print(f"➡️ (WD) MOVED: {event.src_path} -> {event.dest_path}")
-            write_master_log("MOVED (Source)", event.src_path)
+            
+            # İpucunu (hint) kaynak yol için kullan
+            write_master_log("MOVED (Source)", event.src_path, obj_type_hint=obj_type_hint)
+            # Hedef yol için 'exists' çalışır, ipucuna gerek yok
             write_master_log("MOVED (Dest)", event.dest_path)
             
             if event.src_path in integrity_database:
@@ -313,7 +356,7 @@ if __name__ == "__main__":
         observer = Observer()
         observer.schedule(event_handler, path_to_watch, recursive=True)
         observer.start() # Ayrı bir thread'de izlemeyi başlat
-        print(f"--- 👁️ Watchdog gerçek zamanlı izlemesi başlatıldı: {path_to_watch} ---")
+        print(f"--- Watchdog Online : {path_to_watch} ---")
         
         start_time = time.time()
         last_scan_time = time.time()

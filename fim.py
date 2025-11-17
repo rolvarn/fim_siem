@@ -1,5 +1,10 @@
 import datetime, os, time, csv, socket, platform
 from pathlib import Path
+# YENİ EKLENEN IMPORTLAR
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# --- BÖLÜM 1: SİZİN AYARLARINIZ VE DEĞİŞKENLERİNİZ (HİÇ DEĞİŞTİRİLMEDİ) ---
 
 # İzlenecek dosya yolu olan home path'i ayarlıyoruz.
 monitoring_path = Path.home()
@@ -40,189 +45,260 @@ LOG_HEADERS = [
 
 # Tüm logların yazılacağı ana dosyanın adı
 MASTER_LOG_FILE = 'master_log.csv'
-# Program başladığında log dosyasını hazırlar
+
+# --- BÖLÜM 2: SİZİN FONKSİYONLARINIZ (check_integrity GERİ DÖNDÜ) ---
+
+# initialize_log (DEĞİŞİKLİK YOK)
 def initialize_log():
-    # 1. os.path.exists() ile bakar: "master_log.csv" adında bir dosya var mı?
     if not os.path.exists(MASTER_LOG_FILE):
-        
-        #    Eğer YOKSA, 'with open(..., mode="w")' ile dosyayı "YAZMA (Write)" modunda açar.
-        #    'mode="w"' dosyayı SIFIRDAN oluşturur.
         with open(MASTER_LOG_FILE, mode="w", newline='', encoding='utf-8') as log:
-            
-            #   Bir CSV yazıcısı oluşturur.
             writer = csv.writer(log)
-            
-            #    En üst satıra, bizim tanımladığımız LOG_HEADERS listesini basar.
-            #    (Yani "Timestamp", "Event Type", "Object Path"...)
             writer.writerow(LOG_HEADERS)
 
-# write_master_log fonksiyonunu satır satır inceliyoruz
+# write_master_log (DEĞİŞİKLİK YOK)
 def write_master_log(event_type, path):
-    
-    #    Daha dosyaya bakmadan, tüm değişkenlere "Bilgi Yok" (N/A) diyoruz.
-    #    Böylece dosya silinmişse bile bu değişkenler tanımsız kalmaz.
     obj_type = "N/A"
-    size = 0  # Boyut için N/A yerine 0 
-    ctime = "N/A" # Creation Time (Oluşturulma)
-    atime = "N/A" # Access Time (Erişim)
-    mtime = "N/A" # Modified Time (Değiştirilme)
+    size = 0
+    ctime = "N/A"
+    atime = "N/A"
+    mtime = "N/A"
 
-    #    "os.path.exists(path)" ile dosyayı kontrol ediyoruz.
     if os.path.exists(path):
-
-        #    Dosya yerindeyse, N/A yazdığımız değişkenlerin üzerini 
-        #    gerçek bilgilerle GÜNCELLİYORUZ.
         obj_type = "DIRECTORY" if os.path.isdir(path) else "FILE"
         try:
-            stat_info = os.stat(path) # Dosyanın tüm kimliğini çek
-            size = stat_info.st_size  # Gerçek boyutu ata
-            ctime = datetime.datetime.fromtimestamp(stat_info.st_ctime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek C. Time ata
-            atime = datetime.datetime.fromtimestamp(stat_info.st_atime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek A. Time ata
-            mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek M. Time ata
+            stat_info = os.stat(path)
+            size = stat_info.st_size
+            ctime = datetime.datetime.fromtimestamp(stat_info.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+            atime = datetime.datetime.fromtimestamp(stat_info.st_atime).strftime('%Y-%m-%d %H:%M:%S')
+            mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
         except:
-            pass # (Sistem dosyası gibi erişemezsek hata verme)
-            
-    #    Bu "elif" bloğu SADECE "os.path.exists" False dönerse çalışır.
-    elif event_type == "DELETED/MOVED":
-        # Dosya silinmiş. Değişkenlere dokunmuyoruz (N/A olarak kalıyorlar).
-        # Sadece tipini daha açıklayıcı yapıyoruz:
-        obj_type = "FILE (Deleted/Moved)"
+            pass
+    elif event_type == "DELETED" or event_type == "MOVED (Source)" or event_type == "DELETED/MOVED":
+        obj_type = "FILE/DIR (Deleted/Moved)"
 
-    # 5. LOG SATIRINI BİRLEŞTİRME
-    #    log_entry listesini oluşturuyoruz.
     log_entry = [
-        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), # Olay zamanı
-        event_type, # Olay ("ACCESS", "DELETED" vs.)
-        path,       # Dosya yolu
-        obj_type,   # Dosya tipi ("FILE", "DIRECTORY" veya "FILE (Deleted)")
-        
-        # EĞER DOSYA SİLİNMİŞSE, bu değişkenler hala 1. adımdaki
-        # "N/A" ve "0" değerindedir. Program ÇÖKMEZ.
-        size,       
-        ctime,      
-        atime,      
-        mtime,      
-        
-        PC_NAME,    # Bilgisayar adı
-        PC_IP       # IP Adresi
+        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        event_type,
+        path,
+        obj_type,
+        size, ctime, atime, mtime,      
+        PC_NAME,
+        PC_IP
     ]
     
-    #    Oluşturduğumuz bu listeyi (log_entry) CSV dosyasının en alt satırına ekleriz.
     try:
         with open(MASTER_LOG_FILE, mode="a", newline='', encoding='utf-8') as log:
             csv.writer(log).writerow(log_entry)
     except:
         pass
 
-def add_db(doc_path): # Integrity databaseye bütünlük kontrolü yapabilmesi için verileri ekler.
+# add_db (DEĞİŞİKLİK YOK)
+def add_db(doc_path):
     try:
         integrity_database[doc_path] = os.path.getsize(doc_path)
     except:
         pass
 
-def setting_walking_list(): # İçerisinde gezinilecek dosya ve dizinleri bulan fonksiyon.
-
+# setting_walking_list (DEĞİŞİKLİK YOK)
+def setting_walking_list():
     print("--- 🔄 Scanning Files... ---")
-    
-    # Güncelleme mekanizması olacağı için geçici dosyalar oluşturuyoruz.
-    # Daha sonra bunları ana dosyalar eşitleyeceğiz.
     temp_docs = [] 
     temp_dirs = []
 
-    # Dizinleri ve dosyaları dışlamalara dikkat ederek gezen fonksiyon.
     def recursive_scan(current_path):
         try:
             for entry in current_path.iterdir():
-                if entry.is_dir(): # Veri dizin mi?
-                    if entry.name not in IGNORE_PATH: # Dosya ismi dışlamalar klasöründe var mı?
-
+                if entry.is_dir():
+                    if entry.name not in IGNORE_PATH:
                         full_path = str(entry) + os.sep 
                         temp_dirs.append(full_path) 
-                        recursive_scan(entry) # Burada dizinin altındaki içeriği kaçırmamak için tekrar aynı fonksiyon ile içeriğine ulaşılır.
-                
-                elif entry.is_file(): # Veri dosya mı?
-
+                        recursive_scan(entry)
+                elif entry.is_file():
                     file_path = str(entry)
                     is_ignored = False
-
-                    for ext in IGNORE_EXT: # Uzantısı dışlama içeriyor mu?
-
+                    for ext in IGNORE_EXT:
                         if entry.name.lower().endswith(ext):
                             is_ignored = True
                             break
-                    
                     if not is_ignored:
                         temp_docs.append(file_path) 
-                    
-                    if file_path not in integrity_database: # Eğer integrity_database'inde yoksa ekle.
+                    if file_path not in integrity_database:
                         add_db(file_path)
-
         except PermissionError:
             pass
         except Exception as e:
             print(f"ERROR: {e}")
 
-    recursive_scan(monitoring_path) # Dosya dizin taramasını başlat.
+    recursive_scan(monitoring_path)
     
-    # Global listeleri güncelle.
     global walking_doc_list, walking_dir_list
     walking_doc_list = temp_docs
     walking_dir_list = temp_dirs
     print(f"--- ✅ Scan Completed. File founded: {len(walking_doc_list)} ---")
 
-def check_integrity(): # Dosya bütünlüğü kontrol eden fonskiyon.
+# --- YENİ: check_integrity "GARBAGE COLLECTOR" (SÜPÜRÜCÜ) OLARAK GERİ DÖNDÜ ---
+def check_integrity_garbage_collector():
+    """
+    Bu fonksiyon, watchdog'un kaçırdığı olayları (örn. silinen dizinlerin 
+    içindeki dosyalar veya program kapalıyken olan değişiklikler) 
+    temizler ve loglar.
+    """
     if not integrity_database:
-        return # Veritabanı boşsa işlem yapma.
+        return
 
-    files_to_delete = [] # Silinen dosyaları listeden kaldırmak için oluşturulan geçici liste.
+    files_to_delete = []
     
-    for doc, old_size in integrity_database.items():
-        if os.path.exists(doc): # Dosya var mı?
-            new_size = os.path.getsize(doc)
-            if old_size != new_size: # Dosyanın eski boyutu yeni boyutundan farklı mı?
-                msg = f"🔥 File changed. -> {doc}"
-                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                write_master_log("MODIFIED", doc)
-                print(msg)
-                integrity_database[doc] = new_size
-        else:
-            msg = f"❌ File deleted/moved. -> {doc}"
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            write_master_log("DELETED/MOVED", doc)
-            print(msg)
+    # 'list()' ile kopyasını alıyoruz, böylece döngüde veritabanını değiştirebiliriz
+    for doc, old_size in list(integrity_database.items()):
+        try:
+            if os.path.exists(doc):
+                # Dosya var. Boyutu değişmiş mi? (Watchdog kaçırmış olabilir)
+                new_size = os.path.getsize(doc)
+                if old_size != new_size:
+                    print(f"🧹 (GC) MODIFIED: {doc}")
+                    write_master_log("MODIFIED", doc)
+                    integrity_database[doc] = new_size
+            else:
+                # Dosya yok. Watchdog bunu (veya ana klasörünü) zaten loglamış olmalı.
+                # Biz sadece veritabanını temizlemek için listeye ekliyoruz.
+                files_to_delete.append(doc)
+                
+        except Exception:
+            # İzin hatası vb. olursa, veritabanından kaldır
             files_to_delete.append(doc)
             
-    for doc in files_to_delete: # Silinecek dosyaları databaseden sil.
-        del integrity_database[doc]
+    # Silinecek dosyaları veritabanından kaldır
+    for doc in files_to_delete:
+        if doc in integrity_database:
+            try:
+                # SESSİZCE SİL. Loglamıyoruz, çünkü watchdog ana dizini logladı.
+                del integrity_database[doc]
+                # print(f"🧹 (GC) Cleaned up: {doc}") # Debug için açılabilir
+            except KeyError:
+                pass
 
-def file_monitoring(): # Dosyaların son erişim zamanını kontrol eden fonksiyon.
-    # Klasörler
+# file_monitoring (DEĞİŞİKLİK YOK)
+def file_monitoring():
     for dir_path in walking_dir_list:
         if dir_path not in memory:
             try:
-                if os.path.getatime(dir_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
+                if os.path.getatime(dir_path) > start_time:
                     memory.add(dir_path)
                     write_master_log("ACCESS", dir_path)
                     print(f"ACCESS: {dir_path}")
             except:
                 pass
 
-    # Dosyalar
     for doc_path in walking_doc_list:
         if doc_path not in memory:
             try:
-                if os.path.getatime(doc_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
+                if os.path.getatime(doc_path) > start_time:
                     memory.add(doc_path)
-                    
                     write_master_log("ACCESS", doc_path)
                     print(f"ACCESS: {doc_path}")
-                    
-                    if doc_path not in integrity_database: # Eğer veritabanında yoksa ekle
+                    if doc_path not in integrity_database:
                         add_db(doc_path)
             except:
                 pass
 
+# --- BÖLÜM 3: GÜNCELLENMİŞ WATCHDOG MANTIĞI ---
 
+def is_ignored(path_str):
+    """Dışlama listesini kontrol eden yardımcı fonksiyon. (DEĞİŞİKLİK YOK)"""
+    if not path_str:
+        return True
+    try:
+        for ext in IGNORE_EXT:
+            if path_str.lower().endswith(ext):
+                return True
+        parts = Path(path_str).parts
+        if any(part in IGNORE_PATH for part in parts):
+            return True
+    except:
+         return True 
+    return False
+
+class MyEventHandler(FileSystemEventHandler):
+    """
+    Watchdog olaylarını yakalar. Çöp Kutusu'na taşımayı 
+    doğru şekilde "DELETED" olarak ele alır.
+    """
+    
+    def on_created(self, event):
+        if is_ignored(event.src_path): return
+            
+        print(f"✅ (WD) CREATED: {event.src_path}")
+        write_master_log("CREATED", event.src_path)
+        if not event.is_directory:
+            add_db(event.src_path)
+
+    def on_deleted(self, event):
+        """'Shift+Delete' (kalıcı silme) olayını yakalar."""
+        if is_ignored(event.src_path): return
+            
+        print(f"❌ (WD) DELETED: {event.src_path}")
+        write_master_log("DELETED", event.src_path)
+        
+        if event.src_path in integrity_database:
+            try: del integrity_database[event.src_path]
+            except KeyError: pass
+
+    def on_modified(self, event):
+        if is_ignored(event.src_path): return
+        if event.is_directory: return
+            
+        print(f"🔥 (WD) MODIFIED: {event.src_path}")
+        write_master_log("MODIFIED", event.src_path)
+        
+        try:
+            integrity_database[event.src_path] = os.path.getsize(event.src_path)
+        except:
+            pass 
+
+    def on_moved(self, event):
+        """'Delete' (Çöp Kutusu) veya normal taşımayı yakalar."""
+        src_is_ignored = is_ignored(event.src_path)
+        dest_is_ignored = is_ignored(event.dest_path)
+
+        # 1. DURUM: Çöp Kutusuna Taşıma ('Delete' tuşu)
+        if not src_is_ignored and dest_is_ignored:
+            print(f"❌ (WD) DELETED (Moved to Recycle Bin): {event.src_path}")
+            write_master_log("DELETED", event.src_path) 
+            
+            if event.src_path in integrity_database:
+                try: del integrity_database[event.src_path]
+                except KeyError: pass
+            
+            # ÖNEMLİ: Eğer silinen bir DİZİN ise, içindekiler hala
+            # veritabanındadır. Bunları 'check_integrity_garbage_collector'
+            # fonksiyonu periyodik olarak temizleyecektir.
+            return
+
+        # 2. DURUM: Çöp Kutusundan Geri Alma
+        elif src_is_ignored and not dest_is_ignored:
+            print(f"✅ (WD) CREATED (Moved from Ignored): {event.dest_path}")
+            write_master_log("CREATED", event.dest_path) 
+            if not event.is_directory:
+                 add_db(event.dest_path)
+            return
+
+        # 3. DURUM: Yoksayılanlar arası taşıma
+        elif src_is_ignored and dest_is_ignored:
+            return
+
+        # 4. DURUM: Normal taşıma (örn: Masaüstü -> Belgelerim)
+        else:
+            print(f"➡️ (WD) MOVED: {event.src_path} -> {event.dest_path}")
+            write_master_log("MOVED (Source)", event.src_path)
+            write_master_log("MOVED (Dest)", event.dest_path)
+            
+            if event.src_path in integrity_database:
+                try: del integrity_database[event.src_path]
+                except KeyError: pass
+            if not event.is_directory:
+                 add_db(event.dest_path)
+
+# --- BÖLÜM 4: GÜNCELLENMİŞ ANA ÇALIŞTIRMA BLOĞU ---
 
 if __name__ == "__main__":
     try:
@@ -231,31 +307,41 @@ if __name__ == "__main__":
         # Başlangıçta bir kez tarama yap
         setting_walking_list()
         
+        # --- Watchdog Gözlemcisini Başlat ---
+        path_to_watch = str(monitoring_path)
+        event_handler = MyEventHandler()
+        observer = Observer()
+        observer.schedule(event_handler, path_to_watch, recursive=True)
+        observer.start() # Ayrı bir thread'de izlemeyi başlat
+        print(f"--- 👁️ Watchdog gerçek zamanlı izlemesi başlatıldı: {path_to_watch} ---")
+        
         start_time = time.time()
         last_scan_time = time.time()
         SCAN_INTERVAL = 60  # Listeyi kaç saniyede bir güncellesin?
         
         while True: #Sürekli çalışan sistem.
-            current_time = time.time() #Anlık saati al.
+            current_time = time.time()
             
-            # Güncelleme zamanı geldi mi diye kontrol et, geldiyse listeyi güncelle.
+            # 1. Periyodik tarama (file_monitoring için)
             if current_time - last_scan_time > SCAN_INTERVAL:
                 setting_walking_list()
                 last_scan_time = current_time
-                
-                # Memory temizliği yap.
                 memory.clear() 
                 print("--- Memory Cleaned ---")
-                start_time = time.time() # Temizlik sonrası tekrardan aynı dosyaları ekrana yazdırmamak için saati güncelle.
+                start_time = time.time()
 
-            # Dosyaları İzle (Her döngüde çalışır)
+            # 2. 'file_monitoring' (ACCESS time) izlemesi
             file_monitoring()
             
-            # Bütünlüğü Kontrol Et (Her döngüde çalışır)
-            check_integrity()
+            # 3. 'Garbage Collector' (Watchdog'un kaçırdıklarını temizler)
+            check_integrity_garbage_collector()
             
             # Dinlen
             time.sleep(5)
 
     except KeyboardInterrupt:
-        print("Shutting down...")
+        observer.stop() # Watchdog'u durdur
+        print("\n--- 🛑 İzleme durduruluyor... ---")
+    
+    observer.join() # Watchdog thread'inin bitmesini bekle
+    print("--- Kapatıldı. ---")

@@ -1,12 +1,8 @@
-import datetime
-import os
+import datetime, os, time, csv, socket, platform
 from pathlib import Path
-import time
-import csv
 
 # İzlenecek dosya yolu olan home path'i ayarlıyoruz.
 monitoring_path = Path.home()
-
 
 # Dışlama yapılacak klasör - dosya uzantıları 
 IGNORE_PATH = {
@@ -31,14 +27,97 @@ integrity_database = {}
 
 # Aynı dosyayı tekrardan ekrana yazdırmamak için oluşturulan memory değişkeni.
 memory = set() 
+# Bilgisayarın adını ve IP'sini alan değişkenler
+PC_NAME = platform.node() # veya socket.gethostname()
+PC_IP = socket.gethostbyname(socket.gethostname())
 
-def log_warnings(time_str, message): # Bütünlük kontrolü sonucu çıktıları CSV dosyasına kaydeder.
-    with open('warnings.csv', mode="a", newline='', encoding='utf-8') as log:
-        csv.writer(log).writerow([time_str, message])
+# CSV dosyasının başlık (sütun) adları
+LOG_HEADERS = [
+    "Timestamp", "Event Type", "Object Path", "Object Type", 
+    "File Size", "Creation Time", "Access Time", "Modified Time",
+    "Machine Name", "IP Address"
+]
 
-def write_csv_log(path, doc_name): # Dosyalar izlendiği sırada dizinlerin ve dosyaların pathlerini kaydeder.
-    with open('log.csv', mode="a", newline='', encoding='utf-8') as log:
-        csv.writer(log).writerow([path, doc_name])
+# Tüm logların yazılacağı ana dosyanın adı
+MASTER_LOG_FILE = 'master_log.csv'
+# Program başladığında log dosyasını hazırlar
+def initialize_log():
+    # 1. os.path.exists() ile bakar: "master_log.csv" adında bir dosya var mı?
+    if not os.path.exists(MASTER_LOG_FILE):
+        
+        # 2. Eğer YOKSA, 'with open(..., mode="w")' ile dosyayı "YAZMA (Write)" modunda açar.
+        #    'mode="w"' dosyayı SIFIRDAN oluşturur.
+        with open(MASTER_LOG_FILE, mode="w", newline='', encoding='utf-8') as log:
+            
+            # 3. Bir CSV yazıcısı oluşturur.
+            writer = csv.writer(log)
+            
+            # 4. En üst satıra, bizim tanımladığımız LOG_HEADERS listesini basar.
+            #    (Yani "Timestamp", "Event Type", "Object Path"...)
+            writer.writerow(LOG_HEADERS)
+
+# write_master_log fonksiyonunu satır satır inceliyoruz
+def write_master_log(event_type, path):
+    
+    # 1. GÜVENLİK AĞI KURULUYOR (N/A BURADA DEVREYE GİRER)
+    #    Daha dosyaya bakmadan, tüm değişkenlere "Bilgi Yok" (N/A) diyoruz.
+    #    Böylece dosya silinmişse bile bu değişkenler tanımsız kalmaz.
+    obj_type = "N/A"
+    size = 0  # Boyut için N/A yerine 0 daha mantıklı
+    ctime = "N/A" # Creation Time (Oluşturulma)
+    atime = "N/A" # Access Time (Erişim)
+    mtime = "N/A" # Modified Time (Değiştirilme)
+
+    # 2. KONTROL: DOSYA HALA ORADA MI?
+    #    "os.path.exists(path)" ile dosyayı kontrol ediyoruz.
+    if os.path.exists(path):
+        
+        # 3. SENARYO 1: DOSYA VAR (ACCESS veya MODIFIED olayı)
+        #    Dosya yerindeyse, N/A yazdığımız değişkenlerin üzerini 
+        #    gerçek bilgilerle GÜNCELLİYORUZ.
+        obj_type = "DIRECTORY" if os.path.isdir(path) else "FILE"
+        try:
+            stat_info = os.stat(path) # Dosyanın tüm kimliğini çek
+            size = stat_info.st_size  # Gerçek boyutu ata
+            ctime = datetime.datetime.fromtimestamp(stat_info.st_ctime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek C. Time ata
+            atime = datetime.datetime.fromtimestamp(stat_info.st_atime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek A. Time ata
+            mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S') # Gerçek M. Time ata
+        except:
+            pass # (Sistem dosyası gibi erişemezsek hata verme)
+            
+    # 4. SENARYO 2: DOSYA YOK (DELETED olayı)
+    #    Bu "elif" bloğu SADECE "os.path.exists" False dönerse çalışır.
+    elif event_type == "DELETED/MOVED":
+        # Dosya silinmiş. Değişkenlere dokunmuyoruz (N/A olarak kalıyorlar).
+        # Sadece tipini daha açıklayıcı yapıyoruz:
+        obj_type = "FILE (Deleted/Moved)"
+
+    # 5. LOG SATIRINI BİRLEŞTİRME
+    #    log_entry listesini oluşturuyoruz.
+    log_entry = [
+        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), # Olay zamanı
+        event_type, # Olay ("ACCESS", "DELETED" vs.)
+        path,       # Dosya yolu
+        obj_type,   # Dosya tipi ("FILE", "DIRECTORY" veya "FILE (Deleted)")
+        
+        # EĞER DOSYA SİLİNMİŞSE, bu değişkenler hala 1. adımdaki
+        # "N/A" ve "0" değerindedir. Program ÇÖKMEZ.
+        size,       
+        ctime,      
+        atime,      
+        mtime,      
+        
+        PC_NAME,    # Bilgisayar adı
+        PC_IP       # IP Adresi
+    ]
+    
+    # 6. DOSYAYA YAZMA
+    #    Oluşturduğumuz bu listeyi (log_entry) CSV dosyasının en alt satırına ekleriz.
+    try:
+        with open(MASTER_LOG_FILE, mode="a", newline='', encoding='utf-8') as log:
+            csv.writer(log).writerow(log_entry)
+    except:
+        pass
 
 def add_db(doc_path): # Integrity databaseye bütünlük kontrolü yapabilmesi için verileri ekler.
     try:
@@ -106,15 +185,15 @@ def check_integrity(): # Dosya bütünlüğü kontrol eden fonskiyon.
         if os.path.exists(doc): # Dosya var mı?
             new_size = os.path.getsize(doc)
             if old_size != new_size: # Dosyanın eski boyutu yeni boyutundan farklı mı?
-                msg = f"🔥 File size changed. -> {doc}"
+                msg = f"🔥 File changed. -> {doc}"
                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                log_warnings(now, msg)
+                write_master_log("MODIFIED", doc)
                 print(msg)
                 integrity_database[doc] = new_size
         else:
             msg = f"❌ File deleted/moved. -> {doc}"
             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_warnings(now, msg)
+            write_master_log("DELETED/MOVED", doc)
             print(msg)
             files_to_delete.append(doc)
             
@@ -128,7 +207,7 @@ def file_monitoring(): # Dosyaların son erişim zamanını kontrol eden fonksiy
             try:
                 if os.path.getatime(dir_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
                     memory.add(dir_path)
-                    write_csv_log(dir_path, "")
+                    write_master_log("ACCESS", dir_path)
                     print(f"ACCESS: {dir_path}")
             except:
                 pass
@@ -139,8 +218,9 @@ def file_monitoring(): # Dosyaların son erişim zamanını kontrol eden fonksiy
             try:
                 if os.path.getatime(doc_path) > start_time: # Dizinin son erişilme zamanı başlangıç zamanından sonra mı?
                     memory.add(doc_path)
+                    
+                    write_master_log("ACCESS", doc_path)
                     print(f"ACCESS: {doc_path}")
-                    write_csv_log(os.path.dirname(doc_path), doc_path)
                     
                     if doc_path not in integrity_database: # Eğer veritabanında yoksa ekle
                         add_db(doc_path)
@@ -151,6 +231,8 @@ def file_monitoring(): # Dosyaların son erişim zamanını kontrol eden fonksiy
 
 if __name__ == "__main__":
     try:
+        initialize_log()
+        
         # Başlangıçta bir kez tarama yap
         setting_walking_list()
         

@@ -45,34 +45,31 @@ def initialize_log():
     # 1. os.path.exists() ile bakar: "master_log.csv" adında bir dosya var mı?
     if not os.path.exists(MASTER_LOG_FILE):
         
-        # 2. Eğer YOKSA, 'with open(..., mode="w")' ile dosyayı "YAZMA (Write)" modunda açar.
+        #    Eğer YOKSA, 'with open(..., mode="w")' ile dosyayı "YAZMA (Write)" modunda açar.
         #    'mode="w"' dosyayı SIFIRDAN oluşturur.
         with open(MASTER_LOG_FILE, mode="w", newline='', encoding='utf-8') as log:
             
-            # 3. Bir CSV yazıcısı oluşturur.
+            #   Bir CSV yazıcısı oluşturur.
             writer = csv.writer(log)
             
-            # 4. En üst satıra, bizim tanımladığımız LOG_HEADERS listesini basar.
+            #    En üst satıra, bizim tanımladığımız LOG_HEADERS listesini basar.
             #    (Yani "Timestamp", "Event Type", "Object Path"...)
             writer.writerow(LOG_HEADERS)
 
 # write_master_log fonksiyonunu satır satır inceliyoruz
 def write_master_log(event_type, path):
     
-    # 1. GÜVENLİK AĞI KURULUYOR (N/A BURADA DEVREYE GİRER)
     #    Daha dosyaya bakmadan, tüm değişkenlere "Bilgi Yok" (N/A) diyoruz.
     #    Böylece dosya silinmişse bile bu değişkenler tanımsız kalmaz.
     obj_type = "N/A"
-    size = 0  # Boyut için N/A yerine 0 daha mantıklı
+    size = 0  # Boyut için N/A yerine 0 
     ctime = "N/A" # Creation Time (Oluşturulma)
     atime = "N/A" # Access Time (Erişim)
     mtime = "N/A" # Modified Time (Değiştirilme)
 
-    # 2. KONTROL: DOSYA HALA ORADA MI?
     #    "os.path.exists(path)" ile dosyayı kontrol ediyoruz.
     if os.path.exists(path):
-        
-        # 3. SENARYO 1: DOSYA VAR (ACCESS veya MODIFIED olayı)
+
         #    Dosya yerindeyse, N/A yazdığımız değişkenlerin üzerini 
         #    gerçek bilgilerle GÜNCELLİYORUZ.
         obj_type = "DIRECTORY" if os.path.isdir(path) else "FILE"
@@ -85,7 +82,6 @@ def write_master_log(event_type, path):
         except:
             pass # (Sistem dosyası gibi erişemezsek hata verme)
             
-    # 4. SENARYO 2: DOSYA YOK (DELETED olayı)
     #    Bu "elif" bloğu SADECE "os.path.exists" False dönerse çalışır.
     elif event_type == "DELETED/MOVED":
         # Dosya silinmiş. Değişkenlere dokunmuyoruz (N/A olarak kalıyorlar).
@@ -111,7 +107,6 @@ def write_master_log(event_type, path):
         PC_IP       # IP Adresi
     ]
     
-    # 6. DOSYAYA YAZMA
     #    Oluşturduğumuz bu listeyi (log_entry) CSV dosyasının en alt satırına ekleriz.
     try:
         with open(MASTER_LOG_FILE, mode="a", newline='', encoding='utf-8') as log:

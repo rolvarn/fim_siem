@@ -1,10 +1,7 @@
 import datetime, os, time, csv, socket, platform, tempfile
 from pathlib import Path
-# YENİ EKLENEN IMPORTLAR
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-
-# --- BÖLÜM 1: SİZİN AYARLARINIZ VE DEĞİŞKENLERİNİZ (HİÇ DEĞİŞTİRİLMEDİ) ---
 
 # İzlenecek dosya yolu olan home path'i ayarlıyoruz.
 monitoring_path = Path.home()
@@ -44,8 +41,9 @@ LOG_HEADERS = [
     "Machine Name", "IP Address"
 ]
 
+temp_directory = tempfile.gettempdir()
 
-MASTER_LOG_FILE = os.path.join('master_log.csv')
+MASTER_LOG_FILE = os.path.join(temp_directory,'master_log.csv')
 
 def initialize_log():
     if not os.path.exists(MASTER_LOG_FILE):
@@ -54,8 +52,7 @@ def initialize_log():
             writer.writerow(LOG_HEADERS)
 
 # Log yazan fonksiyon
-# Log yazan fonksiyon
-def write_master_log(event_type, path, obj_type_hint=None): # <-- DEĞİŞİKLİK: 'obj_type_hint' eklendi
+def write_master_log(event_type, path, obj_type_hint=None):
     obj_type = "N/A"
     size = 0
     ctime = "N/A"
@@ -73,7 +70,6 @@ def write_master_log(event_type, path, obj_type_hint=None): # <-- DEĞİŞİKLİ
         except:
             pass
     
-    # --- DEĞİŞİKLİK: 'elif' bloğu güncellendi ---
     elif event_type == "DELETED" or event_type == "MOVED (Source)":
         # 'os.path.exists' false döndüğü için, event'ten gelen ipucunu kullan
         if obj_type_hint:
@@ -81,7 +77,6 @@ def write_master_log(event_type, path, obj_type_hint=None): # <-- DEĞİŞİKLİ
         else:
             # (Eski) İstenmeyen duruma geri dön
             obj_type = "FILE/DIR (Deleted/Moved)"
-    # --- DEĞİŞİKLİK SONU ---
 
     log_entry = [
         datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -103,7 +98,7 @@ def write_master_log(event_type, path, obj_type_hint=None): # <-- DEĞİŞİKLİ
 # Gelen dosyaları databaseye alan fonksiyon
 def add_db(doc_path):
     try:
-        # DEĞİŞİKLİK: Boyut yerine 'modification time' (mtime) kaydet
+
         integrity_database[doc_path] = os.path.getmtime(doc_path)
     except:
         pass
@@ -145,7 +140,7 @@ def setting_walking_list():
     walking_dir_list = temp_dirs
     print(f"--- ✅ Scan Completed. File founded: {len(walking_doc_list)} ---")
 
-# --- YENİ: check_integrity "GARBAGE COLLECTOR" (SÜPÜRÜCÜ) OLARAK GERİ DÖNDÜ ---
+
 def check_integrity_garbage_collector():
     """
     Bu fonksiyon, watchdog'un kaçırdığı olayları (örn. silinen dizinlerin 
@@ -158,17 +153,14 @@ def check_integrity_garbage_collector():
     files_to_delete = []
     
     # 'list()' ile kopyasını alıyoruz...
-    # DEĞİŞİKLİK: 'old_size' yerine 'old_mtime'
     for doc, old_mtime in list(integrity_database.items()):
         try:
             if os.path.exists(doc):
                 # Dosya var. Değiştirilme zamanı değişmiş mi?
-                # DEĞİŞİKLİK: 'getsize()' yerine 'getmtime()'
                 new_mtime = os.path.getmtime(doc)
                 if old_mtime != new_mtime:
                     print(f"🧹 (GC) MODIFIED: {doc}")
                     write_master_log("MODIFIED", doc)
-                    # DEĞİŞİKLİK: Yeni 'mtime' ile güncelle
                     integrity_database[doc] = new_mtime
             else:
                 # Dosya yok...
@@ -185,7 +177,7 @@ def check_integrity_garbage_collector():
             except KeyError:
                 pass
 
-# file_monitoring (DEĞİŞİKLİK YOK)
+# file_monitoring
 def file_monitoring():
     for dir_path in walking_dir_list:
         if dir_path not in memory:
@@ -209,10 +201,9 @@ def file_monitoring():
             except:
                 pass
 
-# --- BÖLÜM 3: GÜNCELLENMİŞ WATCHDOG MANTIĞI ---
 
 def is_ignored(path_str):
-    """Dışlama listesini kontrol eden yardımcı fonksiyon. (DEĞİŞİKLİK YOK)"""
+    """Dışlama listesini kontrol eden yardımcı fonksiyon."""
     if not path_str:
         return True
     try:
@@ -292,7 +283,6 @@ class MyEventHandler(FileSystemEventHandler):
         src_is_ignored = is_ignored(event.src_path)
         dest_is_ignored = is_ignored(event.dest_path)
 
-        # --- DEĞİŞİKLİK BURADA (on_deleted ile aynı mantık) ---
         obj_type_hint = ""
         if event.is_directory:
             obj_type_hint = "DIRECTORY"
@@ -302,7 +292,6 @@ class MyEventHandler(FileSystemEventHandler):
                 obj_type_hint = "DIRECTORY"
             else:
                 obj_type_hint = "FILE"
-        # --- DEĞİŞİKLİK SONU ---
 
         # 1. DURUM: Çöp Kutusuna Taşıma ('Delete' tuşu)
         if not src_is_ignored and dest_is_ignored:
@@ -340,8 +329,6 @@ class MyEventHandler(FileSystemEventHandler):
                 except KeyError: pass
             if not event.is_directory:
                  add_db(event.dest_path)
-
-# --- BÖLÜM 4: GÜNCELLENMİŞ ANA ÇALIŞTIRMA BLOĞU ---
 
 if __name__ == "__main__":
     try:

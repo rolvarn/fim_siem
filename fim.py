@@ -3,8 +3,8 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# İzlenecek dosya yolu olan home path'i ayarlıyoruz.
-monitoring_path = Path.home()
+# Programın çalıştığı diskin pathini alıyoruz.
+monitoring_path = Path(Path.cwd().anchor)
 
 # Dışlama yapılacak klasör - dosya uzantıları 
 IGNORE_PATH = {

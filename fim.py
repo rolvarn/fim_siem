@@ -3,7 +3,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Programın çalıştığı diskin pathini alıyoruz.
+# İzlenecek dosya yolu olan home path'i ayarlıyoruz.
 monitoring_path = Path(Path.cwd().anchor)
 
 # Dışlama yapılacak klasör - dosya uzantıları 
@@ -331,6 +331,7 @@ class MyEventHandler(FileSystemEventHandler):
                  add_db(event.dest_path)
 
 if __name__ == "__main__":
+    observer = None
     try:
         initialize_log()
         
@@ -370,7 +371,9 @@ if __name__ == "__main__":
             time.sleep(5)
 
     except KeyboardInterrupt:
-        observer.stop() # Watchdog'u durdur
+        if observer is not None:
+            observer.stop() # Watchdog'u durdur
+            observer.join()
         print("\n--- 🛑 İzleme durduruluyor... ---")
     
     observer.join() # Watchdog thread'inin bitmesini bekle

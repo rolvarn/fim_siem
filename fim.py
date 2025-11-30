@@ -1,380 +1,367 @@
-import datetime, os, time, csv, socket, platform, tempfile
-from pathlib import Path
+import os
+import time
+import csv
+import socket
+import threading
+import sys
+import win32gui
+import win32api
+import win32file
+import win32com.client
+import pywintypes # Win32 hatalarını yakalamak için
+from urllib.parse import unquote
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
+from datetime import datetime
 
-# İzlenecek dosya yolu olan home path'i ayarlıyoruz.
-monitoring_path = Path(Path.cwd().anchor)
+# --- AYARLAR ---
+LOG_DOSYASI = "log.csv"
+CSV_LOCK = threading.Lock()
+EXIT_EVENT = threading.Event()
 
-# Dışlama yapılacak klasör - dosya uzantıları 
-IGNORE_PATH = {
-    'AppData', 'Windows', 'Program Files', 'Program Files (x86)', 'SendTo','Recent','Local Settings','Cookies','Application Data','NetHood',
-    'ProgramData', '.vscode', '__pycache__', '.git', 'node_modules', 
-    '.cache', '.config', 'Microsoft', 'NVIDIA', '$Recycle.Bin', 
-    'System Volume Information'
+# --- FİLTRELEME AYARLARI (Set yapısına çevrildi - O(1) Performans) ---
+# Tüm girdileri küçük harfe çevirerek set içine alıyoruz.
+DISLANACAK_KLASORLER = {
+    r"appdata", r"$recycle.bin", r"system volume info",
+    r"venv", r"__pycache__", r".git", r"config.msi", r"windows", r"program files"
 }
 
-IGNORE_EXT = {  
-    '.sys', '.pif', '.com', '.scr', '.log', '.ini', '.cfg', '.json', 
-    '.xml', '.dat', '.db', '.bin', '.tmp', '.temp', '.cache', '.bak', 
-    '.lnk', 'thumbs.db', '.pf', '.pfl'
+DISLANACAK_UZANTILAR = {
+    ".tmp", ".dat", ".ini", ".db", ".db-wal", ".db-shm", 
+    ".log", ".lnk", ".pf", ".chk", ".xml", ".json", ".pyc"
 }
 
-# Gezilecek dizin ve dosyaların listesi.
-walking_doc_list = []
-walking_dir_list = []
+DISLANACAK_DOSYALAR = {
+    "ntuser.dat", "desktop.ini", "thumbs.db", "pagefile.sys", "swapfile.sys",
+    "my music", "my videos", "my pictures", "documents",
+    "log.csv"
+}
 
-# Bütünlük kontrolü yapılacak olan database
-integrity_database = {}
+# --- SİSTEM BİLGİLERİ (Güvenli Alma) ---
+try:
+    HOSTNAME = socket.gethostname()
+    IP_ADDRESS = socket.gethostbyname(HOSTNAME)
+except Exception as e:
+    print(f"[!] Ağ bilgisi alınamadı: {e}")
+    HOSTNAME = "LOCALHOST"
+    IP_ADDRESS = "127.0.0.1"
 
-# Aynı dosyayı tekrardan ekrana yazdırmamak için oluşturulan memory değişkeni.
-memory = set() 
-
-# Bilgisayarın adını ve IP'sini alan değişkenler
-PC_NAME = platform.node() # veya socket.gethostname()
-PC_IP = socket.gethostbyname(socket.gethostname())
-
-# CSV dosyasının başlık (sütun) adları
-LOG_HEADERS = [
-    "Timestamp", "Event Type", "Object Path", "Object Type", 
-    "File Size", "Creation Time", "Access Time", "Modified Time",
-    "Machine Name", "IP Address"
-]
-
-temp_directory = tempfile.gettempdir()
-
-MASTER_LOG_FILE = os.path.join(temp_directory,'master_log.csv')
-
-def initialize_log():
-    if not os.path.exists(MASTER_LOG_FILE):
-        with open(MASTER_LOG_FILE, mode="w", newline='', encoding='utf-8') as log:
-            writer = csv.writer(log)
-            writer.writerow(LOG_HEADERS)
-
-# Log yazan fonksiyon
-def write_master_log(event_type, path, obj_type_hint=None):
-    obj_type = "N/A"
-    size = 0
-    ctime = "N/A"
-    atime = "N/A"
-    mtime = "N/A"
-
-    if os.path.exists(path):
-        obj_type = "DIRECTORY" if os.path.isdir(path) else "FILE"
-        try:
-            stat_info = os.stat(path)
-            size = stat_info.st_size
-            ctime = datetime.datetime.fromtimestamp(stat_info.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
-            atime = datetime.datetime.fromtimestamp(stat_info.st_atime).strftime('%Y-%m-%d %H:%M:%S')
-            mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-        except:
-            pass
-    
-    elif event_type == "DELETED" or event_type == "MOVED (Source)":
-        # 'os.path.exists' false döndüğü için, event'ten gelen ipucunu kullan
-        if obj_type_hint:
-            obj_type = obj_type_hint
-        else:
-            # (Eski) İstenmeyen duruma geri dön
-            obj_type = "FILE/DIR (Deleted/Moved)"
-
-    log_entry = [
-        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        event_type,
-        path,
-        obj_type,
-        size, ctime, atime, mtime,      
-        PC_NAME,
-        PC_IP
-    ]
-    
+def get_all_drives():
     try:
-        with open(MASTER_LOG_FILE, mode="a", newline='', encoding='utf-8') as log:
-            csv.writer(log).writerow(log_entry)
-    except:
-        pass
+        drives = win32api.GetLogicalDriveStrings()
+        drives = drives.split('\000')[:-1]
+        return drives
+    except Exception as e:
+        print(f"[!] Sürücü listesi hatası: {e}")
+        return []
 
-
-# Gelen dosyaları databaseye alan fonksiyon
-def add_db(doc_path):
+def strict_drive_check(disk_path):
+    """
+    Sürücü Kontrolü v3.0 (Leak-Free)
+    Handle sızıntısını önlemek için try...finally yapısı kullanır.
+    """
+    handle = None
     try:
+        # 1. CD-ROM Kontrolü
+        if win32file.GetDriveType(disk_path) == win32file.DRIVE_CDROM:
+            return False
 
-        integrity_database[doc_path] = os.path.getmtime(doc_path)
-    except:
-        pass
-
-# setting_walking_list 
-def setting_walking_list():
-    print("--- 🔄 Scanning Files... ---")
-    temp_docs = [] 
-    temp_dirs = []
-
-    def recursive_scan(current_path):
-        try:
-            for entry in current_path.iterdir():
-                if entry.is_dir():
-                    if entry.name not in IGNORE_PATH:
-                        full_path = str(entry) + os.sep 
-                        temp_dirs.append(full_path) 
-                        recursive_scan(entry)
-                elif entry.is_file():
-                    file_path = str(entry)
-                    is_ignored = False
-                    for ext in IGNORE_EXT:
-                        if entry.name.lower().endswith(ext):
-                            is_ignored = True
-                            break
-                    if not is_ignored:
-                        temp_docs.append(file_path) 
-                    if file_path not in integrity_database:
-                        add_db(file_path)
-        except PermissionError:
-            pass
-        except Exception as e:
-            print(f"ERROR: {e}")
-
-    recursive_scan(monitoring_path)
-    
-    global walking_doc_list, walking_dir_list
-    walking_doc_list = temp_docs
-    walking_dir_list = temp_dirs
-    print(f"--- ✅ Scan Completed. File founded: {len(walking_doc_list)} ---")
-
-
-def check_integrity_garbage_collector():
-    """
-    Bu fonksiyon, watchdog'un kaçırdığı olayları (örn. silinen dizinlerin 
-    içindeki dosyalar veya program kapalıyken olan değişiklikler) 
-    temizler ve loglar.
-    """
-    if not integrity_database:
-        return
-
-    files_to_delete = []
-    
-    # 'list()' ile kopyasını alıyoruz...
-    for doc, old_mtime in list(integrity_database.items()):
-        try:
-            if os.path.exists(doc):
-                # Dosya var. Değiştirilme zamanı değişmiş mi?
-                new_mtime = os.path.getmtime(doc)
-                if old_mtime != new_mtime:
-                    print(f"🧹 (GC) MODIFIED: {doc}")
-                    write_master_log("MODIFIED", doc)
-                    integrity_database[doc] = new_mtime
-            else:
-                # Dosya yok...
-                files_to_delete.append(doc)
-                
-        except Exception:
-            files_to_delete.append(doc)
-            
-    # Silinecek dosyaları veritabanından kaldır...
-    for doc in files_to_delete:
-        if doc in integrity_database:
-            try:
-                del integrity_database[doc]
-            except KeyError:
-                pass
-
-# file_monitoring
-def file_monitoring():
-    for dir_path in walking_dir_list:
-        if dir_path not in memory:
-            try:
-                if os.path.getatime(dir_path) > start_time:
-                    memory.add(dir_path)
-                    write_master_log("ACCESS", dir_path)
-                    print(f"ACCESS: {dir_path}")
-            except:
-                pass
-
-    for doc_path in walking_doc_list:
-        if doc_path not in memory:
-            try:
-                if os.path.getatime(doc_path) > start_time:
-                    memory.add(doc_path)
-                    write_master_log("ACCESS", doc_path)
-                    print(f"ACCESS: {doc_path}")
-                    if doc_path not in integrity_database:
-                        add_db(doc_path)
-            except:
-                pass
-
-
-def is_ignored(path_str):
-    """Dışlama listesini kontrol eden yardımcı fonksiyon."""
-    if not path_str:
+        # 2. Handle Açma Testi (Dizin olarak açmayı dene)
+        handle = win32file.CreateFile(
+            disk_path,
+            win32file.GENERIC_READ,
+            win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE | win32file.FILE_SHARE_DELETE,
+            None,
+            win32file.OPEN_EXISTING,
+            win32file.FILE_FLAG_BACKUP_SEMANTICS,
+            None
+        )
         return True
-    try:
-        for ext in IGNORE_EXT:
-            if path_str.lower().endswith(ext):
-                return True
-        parts = Path(path_str).parts
-        if any(part in IGNORE_PATH for part in parts):
-            return True
-    except:
-         return True 
-    return False
-
-class MyEventHandler(FileSystemEventHandler):
-    """
-    Watchdog olaylarını yakalar. Çöp Kutusu'na taşımayı 
-    doğru şekilde "DELETED" olarak ele alır.
-    """
     
-    def on_created(self, event):
-        # (Bu fonksiyonda değişiklik yok, olduğu gibi kalabilir)
-        if is_ignored(event.src_path): return
+    except pywintypes.error:
+        # Erişim reddi veya aygıt hazır değil
+        return False
+    except Exception as e:
+        print(f"[!] Disk kontrol hatası ({disk_path}): {e}")
+        return False
+    finally:
+        # Handle başarılı açıldıysa mutlaka kapatılmalı
+        if handle:
+            try:
+                win32file.CloseHandle(handle)
+            except:
+                pass
+
+def get_drive_strategy(disk_path):
+    try:
+        dtype = win32file.GetDriveType(disk_path)
+        if dtype == win32file.DRIVE_FIXED:
+            return 'STANDARD'
+        else:
+            return 'POLLING'
+    except:
+        return 'POLLING'
+
+def is_excluded(path):
+    """
+    Normalize edilmiş set karşılaştırması yapar.
+    Hata durumunda False döner (Dosyayı kaçırmamak için).
+    """
+    try:
+        path_lower = path.lower()
+        filename = os.path.basename(path_lower)
+        
+        # 1. Klasör Yolu Kontrolü
+        # Tam yol içinde yasaklı klasör geçiyor mu?
+        for d in DISLANACAK_KLASORLER:
+            # Basit string araması yerine daha güvenli path kontrolü yapılabilir
+            # ama performans için string kontrolü tutuyoruz.
+            if d in path_lower:
+                return True
+                
+        # 2. Dosya İsmi Kontrolü
+        if filename in DISLANACAK_DOSYALAR:
+            return True
             
-        print(f"✅ (WD) CREATED: {event.src_path}")
-        write_master_log("CREATED", event.src_path) 
-        if not event.is_directory:
-            add_db(event.src_path)
+        # 3. Uzantı Kontrolü
+        root, ext = os.path.splitext(filename)
+        if ext in DISLANACAK_UZANTILAR:
+            return True
+            
+        return False
+    except Exception as e:
+        print(f"[!] Filtre hatası ({path}): {e}")
+        return False # Hata varsa hariç tutma, loglamayı dene
+
+def get_file_metadata(path, is_deleted=False, passed_type=None):
+    """
+    passed_type: Watchdog'dan gelen kesin tip bilgisi (DIRECTORY/FILE)
+    """
+    # Silinmişse veya yoksa, diskten veri okuyamayız.
+    if is_deleted or not os.path.exists(path):
+        obj_type = passed_type if passed_type else "UNKNOWN"
+        return "N/A", "N/A", "N/A", "N/A", obj_type
+    
+    try:
+        stats = os.stat(path)
+        # Eğer silinmediyse tipi diskten doğrulayabiliriz
+        real_type = "DIRECTORY" if os.path.isdir(path) else "FILE"
+        
+        return (stats.st_size, 
+                datetime.fromtimestamp(stats.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
+                datetime.fromtimestamp(stats.st_atime).strftime('%Y-%m-%d %H:%M:%S'),
+                datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                real_type)
+    except PermissionError:
+        return "Access Denied", "-", "-", "-", "UNKNOWN"
+    except Exception:
+        return "Error", "-", "-", "-", "UNKNOWN"
+
+def write_log(event_type, path, custom_type=None):
+    if EXIT_EVENT.is_set(): return 
+    if is_excluded(path): return
+
+    try:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        is_deleted = "DELETED" in event_type or "MOVED" in event_type
+        
+        # Metadata alırken custom_type bilgisini de gönderiyoruz
+        size, c_time, a_time, m_time, detected_type = get_file_metadata(path, is_deleted, custom_type)
+        
+        # Eğer metadata'dan gelen tip UNKNOWN ise ve bizde custom_type varsa onu kullan
+        final_type = detected_type
+        if final_type == "UNKNOWN" and custom_type:
+            final_type = custom_type
+
+        row = [timestamp, event_type, path, final_type, size, c_time, a_time, m_time, HOSTNAME, IP_ADDRESS]
+
+        if EXIT_EVENT.is_set(): return
+
+        with CSV_LOCK:
+            try:
+                file_exists = os.path.isfile(LOG_DOSYASI)
+                with open(LOG_DOSYASI, mode='a', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    if not file_exists:
+                        writer.writerow(["Timestamp", "Event Type", "Object Path", "Object Type", 
+                                         "File Size", "Creation Time", "Access Time", 
+                                         "Modified Time", "Machine Name", "IP Address"])
+                    writer.writerow(row)
+            except PermissionError:
+                print(f"[!] Log dosyası kilitli: {LOG_DOSYASI}")
+            except Exception as e:
+                print(f"[!] CSV Yazma Hatası: {e}")
+
+    except Exception as e:
+        print(f"[!] Log Hazırlama Hatası: {e}")
+
+class WatcherHandler(FileSystemEventHandler):
+    def on_modified(self, event):
+        if EXIT_EVENT.is_set() or event.is_directory: return
+        write_log("MODIFIED", event.src_path, custom_type="FILE")
+
+    def on_created(self, event):
+        if EXIT_EVENT.is_set() or event.is_directory: return
+        write_log("CREATED", event.src_path, custom_type="FILE")
 
     def on_deleted(self, event):
-        """'Shift+Delete' (kalıcı silme) olayını yakalar."""
-        if is_ignored(event.src_path): return
-            
-        # --- DEĞİŞİKLİK BURADA ---
-        obj_type_hint = ""
-        if event.is_directory:
-            # Watchdog eminse (True), biz de eminiz.
-            obj_type_hint = "DIRECTORY"
-        else:
-            # Watchdog "Dosya" dedi (False).
-            # Uzantısını kontrol edelim.
-            _root, ext = os.path.splitext(event.src_path)
-            if not ext:
-                # Uzantı yoksa (örn: "yeni dizin"), bu bir DİZİN'dir.
-                obj_type_hint = "DIRECTORY"
-            else:
-                # Uzantı varsa (örn: "test.txt"), bu bir DOSYA'dır.
-                obj_type_hint = "FILE"
-        # --- DEĞİŞİKLİK SONU ---
-
-        print(f"❌ (WD) DELETED: {event.src_path}")
-        write_master_log("DELETED", event.src_path, obj_type_hint=obj_type_hint)
-        
-        if event.src_path in integrity_database:
-            try: del integrity_database[event.src_path]
-            except KeyError: pass
-
-    def on_modified(self, event):
-        # (Bu fonksiyonda değişiklik yok, olduğu gibi kalabilir)
-        if is_ignored(event.src_path): return
-        if event.is_directory: return
-        
-        try:
-            new_mtime = os.path.getmtime(event.src_path)
-            if event.src_path in integrity_database:
-                old_mtime = integrity_database[event.src_path]
-                if new_mtime == old_mtime:
-                    return 
-            
-            print(f"🔥 (WD) MODIFIED: {event.src_path}")
-            write_master_log("MODIFIED", event.src_path)
-            integrity_database[event.src_path] = new_mtime
-        except:
-            pass
+        if EXIT_EVENT.is_set(): return
+        # Silinme durumunda tip belirleme
+        tip = "DIRECTORY" if event.is_directory else "FILE"
+        write_log("DELETED", event.src_path, custom_type=tip)
 
     def on_moved(self, event):
-        """'Delete' (Çöp Kutusu) veya normal taşımayı yakalar."""
-        src_is_ignored = is_ignored(event.src_path)
-        dest_is_ignored = is_ignored(event.dest_path)
+        if EXIT_EVENT.is_set(): return
+        tip = "DIRECTORY" if event.is_directory else "FILE"
+        write_log("MOVED", event.src_path, custom_type=tip)
+        write_log("CREATED", event.dest_path, custom_type=tip)
 
-        obj_type_hint = ""
-        if event.is_directory:
-            obj_type_hint = "DIRECTORY"
-        else:
-            _root, ext = os.path.splitext(event.src_path)
-            if not ext:
-                obj_type_hint = "DIRECTORY"
-            else:
-                obj_type_hint = "FILE"
-
-        # 1. DURUM: Çöp Kutusuna Taşıma ('Delete' tuşu)
-        if not src_is_ignored and dest_is_ignored:
-            print(f"❌ DELETED (Moved to Recycle Bin): {event.src_path}")
-            write_master_log("DELETED", event.src_path, obj_type_hint=obj_type_hint) 
-            
-            if event.src_path in integrity_database:
-                try: del integrity_database[event.src_path]
-                except KeyError: pass
-            return
-
-        # 2. DURUM: Çöp Kutusundan Geri Alma
-        elif src_is_ignored and not dest_is_ignored:
-            print(f"✅ (WD) CREATED (Moved from Ignored): {event.dest_path}")
-            write_master_log("CREATED", event.dest_path) 
-            if not event.is_directory:
-                 add_db(event.dest_path)
-            return
-
-        # 3. DURUM: Yoksayılanlar arası taşıma
-        elif src_is_ignored and dest_is_ignored:
-            return
-
-        # 4. DURUM: Normal taşıma (örn: Masaüstü -> Belgelerim)
-        else:
-            print(f"➡️ (WD) MOVED: {event.src_path} -> {event.dest_path}")
-            
-            # İpucunu (hint) kaynak yol için kullan
-            write_master_log("MOVED (Source)", event.src_path, obj_type_hint=obj_type_hint)
-            # Hedef yol için 'exists' çalışır, ipucuna gerek yok
-            write_master_log("MOVED (Dest)", event.dest_path)
-            
-            if event.src_path in integrity_database:
-                try: del integrity_database[event.src_path]
-                except KeyError: pass
-            if not event.is_directory:
-                 add_db(event.dest_path)
-
-if __name__ == "__main__":
-    observer = None
+def get_active_explorer_path():
+    if EXIT_EVENT.is_set(): return None
     try:
-        initialize_log()
+        shell = win32com.client.Dispatch("Shell.Application")
+        foreground_hwnd = win32gui.GetForegroundWindow()
         
-        # Başlangıçta bir kez tarama yap
-        setting_walking_list()
-        
-        # --- Watchdog Gözlemcisini Başlat ---
-        path_to_watch = str(monitoring_path)
-        event_handler = MyEventHandler()
-        observer = Observer()
-        observer.schedule(event_handler, path_to_watch, recursive=True)
-        observer.start() # Ayrı bir thread'de izlemeyi başlat
-        print(f"--- Watchdog Online : {path_to_watch} ---")
-        
-        start_time = time.time()
-        last_scan_time = time.time()
-        SCAN_INTERVAL = 60  # Listeyi kaç saniyede bir güncellesin?
-        
-        while True: #Sürekli çalışan sistem.
-            current_time = time.time()
-            
-            # 1. Periyodik tarama (file_monitoring için)
-            if current_time - last_scan_time > SCAN_INTERVAL:
-                setting_walking_list()
-                last_scan_time = current_time
-                memory.clear() 
-                print("--- Memory Cleaned ---")
-                start_time = time.time()
+        # shell.Windows() bazen iterasyonda hata verebilir, dikkatli olalım
+        for window in shell.Windows():
+            try:
+                if window.hwnd == foreground_hwnd:
+                    raw_path = window.LocationURL
+                    if not raw_path: continue
+                    return unquote(raw_path.replace("file:///", "").replace("/", "\\"))
+            except AttributeError:
+                continue # Bazı pencerelerin (örn: IE) özellikleri farklı olabilir
+    except Exception:
+        return None
+    return None
 
-            # 2. 'file_monitoring' (ACCESS time) izlemesi
-            file_monitoring()
+def scan_folder_access(folder_path):
+    if is_excluded(folder_path) or EXIT_EVENT.is_set(): return
+    try:
+        if not os.path.exists(folder_path): return
+        
+        # Kullanıcıya bilgi ver (Sadece konsol için)
+        try:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📂 Taranıyor: {folder_path}")
+        except: pass
             
-            # 3. 'Garbage Collector' (Watchdog'un kaçırdıklarını temizler)
-            check_integrity_garbage_collector()
+        write_log("ACCESS", folder_path, custom_type="DIRECTORY")
+        
+        try:
+            items = os.listdir(folder_path)
+        except PermissionError:
+            print(f"[!] Erişim Reddedildi: {folder_path}")
+            return
+        except Exception as e:
+            print(f"[!] Okuma Hatası ({folder_path}): {e}")
+            return
+
+        MAX_LOG_LIMIT = 100 
+        sayac = 0
+        for item in items:
+            if EXIT_EVENT.is_set(): break 
+            if sayac >= MAX_LOG_LIMIT: break
             
-            # Dinlen
-            time.sleep(5)
+            full_path = os.path.join(folder_path, item)
+            if is_excluded(full_path): continue
+            
+            write_log("ACCESS", full_path)
+            sayac += 1
+    except Exception:
+        pass
+
+# --- MAIN ---
+if __name__ == "__main__":
+    print(f"--- FIM (FINAL v5 - ROBUST) BAŞLATILDI ---")
+    print(f"PID: {os.getpid()}")
+    print(f"[i] Log: {os.path.abspath(LOG_DOSYASI)}")
+    
+    diskler = get_all_drives()
+    
+    event_handler = WatcherHandler()
+    
+    std_observer = Observer()
+    poll_observer = PollingObserver(timeout=1.0) 
+
+    aktif_std_sayisi = 0
+    aktif_poll_sayisi = 0
+
+    print("Diskler taranıyor...")
+    for disk in diskler:
+        if strict_drive_check(disk):
+            strateji = get_drive_strategy(disk)
+            try:
+                if strateji == 'STANDARD':
+                    std_observer.schedule(event_handler, disk, recursive=True)
+                    print(f"[+] Eklendi (HIZLI): {disk}")
+                    aktif_std_sayisi += 1
+                else:
+                    poll_observer.schedule(event_handler, disk, recursive=True)
+                    print(f"[+] Eklendi (TARAMA): {disk}")
+                    aktif_poll_sayisi += 1
+            except Exception as e:
+                print(f"[!] {disk} eklenirken hata: {e}")
+        else:
+            print(f"[-] Atlandı (Hazır Değil): {disk}")
+
+    print("-" * 30)
+
+    try:
+        if aktif_std_sayisi > 0: 
+            std_observer.start()
+            print(">> Hızlı İzleme Servisi: AKTİF")
+        
+        if aktif_poll_sayisi > 0: 
+            poll_observer.start()
+            print(">> Tarama Servisi: AKTİF")
+
+        if aktif_std_sayisi == 0 and aktif_poll_sayisi == 0:
+            print("[!] Hiçbir disk uygun değil. Program kapatılıyor.")
+            EXIT_EVENT.set()
+        else:
+            print("\nProgram çalışıyor. Çıkış için Ctrl+C.")
+            
+    except Exception as e:
+        print(f"[!!!] BAŞLATMA HATASI: {e}")
+        EXIT_EVENT.set()
+
+    last_path = None
+    
+    try:
+        while not EXIT_EVENT.is_set():
+            try:
+                current_path = get_active_explorer_path()
+                if current_path and current_path != last_path:
+                    if os.path.exists(current_path) and not is_excluded(current_path):
+                        scan_folder_access(current_path)
+                        last_path = current_path
+            except: pass
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
-        if observer is not None:
-            observer.stop() # Watchdog'u durdur
-            observer.join()
-        print("\n--- 🛑 İzleme durduruluyor... ---")
-    
-    observer.join() # Watchdog thread'inin bitmesini bekle
-    print("--- Kapatıldı. ---")
+        print("\n\n[!] Çıkış sinyali alındı...")
+        EXIT_EVENT.set()
+
+    finally:
+        print("[*] Servisler kapatılıyor...")
+        
+        if aktif_std_sayisi > 0: 
+            try: std_observer.stop()
+            except: pass
+        if aktif_poll_sayisi > 0: 
+            try: poll_observer.stop()
+            except: pass
+            
+        print("[*] Thread'lerin durması bekleniyor (Max 5sn)...")
+        # Timeout artırıldı
+        if aktif_std_sayisi > 0: 
+            try: std_observer.join(timeout=5)
+            except: pass
+        if aktif_poll_sayisi > 0: 
+            try: poll_observer.join(timeout=5)
+            except: pass
+            
+        print("[OK] Bye.")
+        try: os._exit(0)
+        except: sys.exit(0)

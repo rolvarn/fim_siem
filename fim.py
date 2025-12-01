@@ -5,7 +5,6 @@ import socket
 import threading
 import win32file
 import win32con
-import win32api
 import win32security
 import win32gui
 import win32com.client
@@ -14,13 +13,17 @@ import traceback
 from urllib.parse import unquote
 from datetime import datetime
 
-# ---------------------------
-# FIM v17.0 - SYSTEM DRIVE ONLY EDITION
-# ---------------------------
-
-# --- DOSYA YOLLARI ---
-LOG_FILE_DATA = r"C:\log.csv"
-LOG_FILE_SYSTEM = r"C:\fim_system_trace.txt"
+# Windows'un kurulu olduğu sürücüyü çeker (Örn: "C:" veya "D:")
+try:
+    SYSTEM_DRIVE = os.environ['SystemDrive']
+except KeyError:
+    SYSTEM_DRIVE = "C:"
+except Exception:
+    SYSTEM_DRIVE = "C:"
+    
+# Log dosyalarını sistemin kök dizinine ayarlar
+LOG_FILE_DATA = f"{SYSTEM_DRIVE}\\log.csv"
+LOG_FILE_SYSTEM = f"{SYSTEM_DRIVE}\\fim_system_trace.txt"
 
 # --- KİLİTLER ---
 CSV_LOCK = threading.Lock()
@@ -62,7 +65,6 @@ def log_system(level, context, message, details=None):
 try:
     HOSTNAME = socket.gethostname()
     IP_ADDRESS = socket.gethostbyname(HOSTNAME)
-    log_system("INFO", "Init", f"Host detected: {HOSTNAME} ({IP_ADDRESS})")
 except Exception as e:
     HOSTNAME = "LOCALHOST"
     IP_ADDRESS = "127.0.0.1"
@@ -162,6 +164,7 @@ def get_metadata(path, is_deleted=False):
         log_system("ERROR", "Metadata", f"Unexpected error on {path}", str(e))
     return default
 
+# --- LOG FONKSİYONU ---
 def write_data_log(action_str, path, dest_path=None, custom_type=None):
     global LOG_COUNTER
     try:
@@ -176,20 +179,31 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
         if not path_parts.isdisjoint(EXCLUDED_DIRS): return
 
         ts = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+        
         target_path = path
         is_del = (action_str in ["DELETED", "RENAMED_OLD"])
         
-        if action_str == "RENAMED" and dest_path:
+        if (action_str == "RENAMED" or dest_path) and dest_path:
             target_path = dest_path 
         
         meta = get_metadata(target_path, is_deleted=is_del)
         if custom_type: meta["type"] = custom_type
 
-        msg = f"{action_str}: {os.path.basename(path)}"
-        evt = f"{action_str} Event"
-        
-        if action_str == "RENAMED" and dest_path:
-            msg = f"Renamed/Moved: {os.path.basename(path)} -> {os.path.basename(dest_path)}"
+        msg = ""
+        evt = action_str
+
+        if dest_path:
+            src_name = os.path.basename(path)
+            dst_name = os.path.basename(dest_path)
+
+            if src_name == dst_name:
+                evt = "MOVED"
+                msg = f"Moved: {path} -> {dest_path}"
+            else:
+                evt = "RENAMED"
+                msg = f"Renamed: {path} -> {dest_path}"
+        else:
+            msg = f"{action_str}: {os.path.basename(path)}"
         
         retries = 3
         while retries > 0:
@@ -222,7 +236,6 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
 
 # --- MONITORING ---
 def monitor_drive(drive_letter):
-    log_system("INFO", "Monitor", f"STARTING MONITOR FOR: {drive_letter}")
     
     while True: # Restart Loop
         hDir = None
@@ -239,8 +252,6 @@ def monitor_drive(drive_letter):
             
             rename_cache = {}
             recent_deletes = {}
-            
-            log_system("INFO", "Monitor", f"Watchdog active on {drive_letter}")
 
             while True: # Event Loop
                 try:
@@ -358,23 +369,18 @@ def scan_folder_access(folder_path):
 # --- MAIN ---
 if __name__ == "__main__":
     os.system('cls')
-    print("=== FIM v17: SYSTEM DRIVE ONLY ===")
-    
-    log_system("INFO", "Main", "Program Starting...")
+    print("=== FIM ===")
 
-    # --- Sadece SystemDrive'ı alıyoruz ---
-    # os.getenv("SystemDrive") genelde "C:" döner. Sonuna "\" ekliyoruz.
-    target_drive = os.getenv("SystemDrive") + "\\"
+    target_drive = SYSTEM_DRIVE + "\\"
     
     print(f"[*] Target Drive: {target_drive}")
+    print(f"[*] Logs will be saved to: {LOG_FILE_DATA}")
     
     dtype = identify_drive_type(target_drive)
     
     if is_drive_usable(target_drive):
-        # Tek bir thread başlatıyoruz
         t = threading.Thread(target=monitor_drive, args=(target_drive,), daemon=True)
         t.start()
-        log_system("INFO", "Main", f"Started monitoring SYSTEM DRIVE: {target_drive} ({dtype})")
         print(f"[*] Monitoring started for {target_drive}")
     else:
         log_system("CRITICAL", "Main", f"System Drive {target_drive} is not usable! Exiting.")
@@ -384,17 +390,15 @@ if __name__ == "__main__":
     
     try:
         while True:
-            # Explorer takibi devam ediyor (Kullanıcı C'de nereye bakıyor?)
             current = get_active_explorer_path()
             if current and current != last_path:
-                # Sadece SystemDrive içindeyse logla (Opsiyonel ama mantıklı)
                 if current.upper().startswith(target_drive.upper()):
                     scan_folder_access(current)
                 last_path = current
             time.sleep(0.5)
             
     except KeyboardInterrupt:
-        log_system("INFO", "Main", "User requested stop.")
+        print("Quitting...")
     except Exception as e:
         log_system("CRITICAL", "Main", "Main loop crashed!", traceback.format_exc())
         input("Press Enter to exit...")

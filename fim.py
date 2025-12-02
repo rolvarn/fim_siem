@@ -85,7 +85,6 @@ ACTION_MODIFIED = 3
 ACTION_RENAMED_OLD = 4
 ACTION_RENAMED_NEW = 5
 
-# --- YARDIMCI FONKSİYONLAR ---
 def identify_drive_type(drive_path):
     try:
         dtype = win32file.GetDriveType(drive_path)

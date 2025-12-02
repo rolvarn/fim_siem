@@ -31,18 +31,39 @@ SYS_LOG_LOCK = threading.Lock()
 LOG_COUNTER = 1
 
 # --- FİLTRELER ---
-EXCLUDED_DIRS = {
-    "appdata", "$recycle.bin", "system volume info", "windows", 
-    "program files", "program files (x86)", ".git", "__pycache__"
-}
+EXCLUDED_SUBPATHS = [
+    r".vscode\extensions",
+    r".vscode\extentions",
+    r"node_modules",
+    r".git",
+    r"windows\system32\winevt\logs",
+    r"microsoftwindows.client.cbs",
+    r"appdata\roaming\microsoft\windows\recent",
+    r"microsoft\diagnosis",
+    r"softwareprotectionplatform",
+    r"windows\appcompat\pca",
+    r"ebwebview\default",
+    r"usrclass.dat",
+    r"ntuser.dat",
+    r"windows\system32\config",
+    r"appdata\local\temp",
+    r"google\chrome\user data",
+    r"nvidia corporation\drs",
+    r"windows defender\scans"
+]
 
-EXCLUDED_FILES = {
-    "log.csv", "fim_system_trace.txt", "ntuser.dat", 
-    "desktop.ini", "thumbs.db"
+EXCLUDED_DIRS = {
+    "$recycle.bin", "system volume info", "perflogs", "recovery", "boot", "msocache"
 }
 
 IGNORED_EXTENSIONS = {
-    ".tmp", ".log", ".bak", ".swp", ".ini", ".dat", ".db", ".chk"
+    ".tmp", ".log", ".bak", ".swp", ".ini", ".dat", ".db", ".sys", ".bin", 
+    ".pf", ".etl", ".evtx", ".ldb", ".chk", ".lock"
+}
+
+EXCLUDED_FILES = {
+    "log.csv", "fim_system_trace.txt", "desktop.ini", "thumbs.db", 
+    "swapfile.sys", "pagefile.sys", "hiberfil.sys"
 }
 
 # --- LOGLAMA ---
@@ -171,9 +192,18 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
         fname = os.path.basename(path_lower)
         _, ext = os.path.splitext(fname)
 
+        # 1. Uzantı Kontrolü
         if ext in IGNORED_EXTENSIONS: return
-        if fname in EXCLUDED_FILES: return
         
+        # 2. Dosya Adı Kontrolü
+        if fname in EXCLUDED_FILES: return
+
+        # 3. Subpath Kontrolü
+        for subpath in EXCLUDED_SUBPATHS:
+            if subpath.lower() in path_lower:
+                return
+
+        # 4. Klasör Adı Kontrolü (Tekil klasör isimleri için)
         path_parts = set(path_lower.replace("\\", "/").split("/"))
         if not path_parts.isdisjoint(EXCLUDED_DIRS): return
 
@@ -194,7 +224,6 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
         if dest_path:
             src_name = os.path.basename(path)
             dst_name = os.path.basename(dest_path)
-
             if src_name == dst_name:
                 evt = "MOVED"
                 msg = f"Moved: {path} -> {dest_path}"
@@ -226,12 +255,10 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
             except PermissionError:
                 time.sleep(0.5)
                 retries -= 1
-            except Exception as e:
-                log_system("ERROR", "CSVWrite", "Fatal CSV Error", str(e))
+            except Exception:
                 break
-
-    except Exception as e:
-        log_system("ERROR", "LogWrapper", "Error inside write_data_log", traceback.format_exc())
+    except Exception:
+        pass
 
 # --- MONITORING ---
 def monitor_drive(drive_letter):

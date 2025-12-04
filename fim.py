@@ -12,6 +12,7 @@ import pywintypes
 import traceback
 from urllib.parse import unquote
 from datetime import datetime
+import random
 
 # Windows'un kurulu olduğu sürücüyü çeker (Örn: "C:" veya "D:")
 try:
@@ -23,47 +24,78 @@ except Exception:
     
 # Log dosyalarını sistemin kök dizinine ayarlar
 LOG_FILE_DATA = f"{SYSTEM_DRIVE}\\log.csv"
-LOG_FILE_SYSTEM = f"{SYSTEM_DRIVE}\\fim_system_trace.txt"
+LOG_FILE_SYSTEM = f"{SYSTEM_DRIVE}\\fim_errors.txt"
 
 # --- KİLİTLER ---
 CSV_LOCK = threading.Lock()
 SYS_LOG_LOCK = threading.Lock()
-LOG_COUNTER = 1
 
 # --- FİLTRELER ---
 EXCLUDED_SUBPATHS = [
     r".vscode\extensions",
-    r".vscode\extentions",
-    r"node_modules",
     r".git",
-    r"windows\system32\winevt\logs",
-    r"microsoftwindows.client.cbs",
-    r"appdata\roaming\microsoft\windows\recent",
-    r"microsoft\diagnosis",
-    r"softwareprotectionplatform",
-    r"windows\appcompat\pca",
-    r"ebwebview\default",
-    r"usrclass.dat",
-    r"ntuser.dat",
-    r"windows\system32\config",
-    r"appdata\local\temp",
-    r"google\chrome\user data",
+    r"node_modules",
+    r"google\googleupdater",          
     r"nvidia corporation\drs",
-    r"windows defender\scans"
+    r"appdata\roaming\code\cache",
+    r"appdata\roaming\code\cacheddata",
+    r"appdata\roaming\code\logs",
+    r"appdata\roaming\code\service worker",
+    r"appdata\roaming\code\user\history",          
+    r"appdata\roaming\code\user\workspacestorage", 
+    r"appdata\roaming\code\user\globalstorage",     
+    r"appdata\roaming\code\gpu",
+    r"appdata\local\google\drivefs",
+    r"appdata\local\gitkrakencli",
+    r"appdata\local\nvidia corporation\glcache",
+    r"appdata\roaming\microsoft\windows\recent",
+    r"programdata\microsoft\windows\wer",           
+    r"programdata\microsoft\windows\apprepository", 
+    r"programdata\microsoft\netframework",          
+    r"windows\softwaredistribution",                
+    r"windows\serviceprofiles",                     
+    r"windows\temp",
+    r"windows\systemtemp",
+    r"appdata\local\temp",
+    r"windows\system32\winevt\logs",
+    r"windows\system32\config",
+    r"microsoftwindows.client.cbs",
+    r"softwareprotectionplatform",
+    r"windows\appcompat",
+    r"microsoft\diagnosis",
+    r"windows defender\scans",
+    r"programdata\microsoft\windows defender",
+    r"usoprivate",
+    r"$recycle.bin",
+    r"system volume info",
+    r"perflogs",
+    r"msocache",
+    r"config.msi",
+    r"windows\boot",
+    r"\recovery"
 ]
 
-EXCLUDED_DIRS = {
-    "$recycle.bin", "system volume info", "perflogs", "recovery", "boot", "msocache"
-}
-
 IGNORED_EXTENSIONS = {
+
     ".tmp", ".log", ".bak", ".swp", ".ini", ".dat", ".db", ".sys", ".bin", 
-    ".pf", ".etl", ".evtx", ".ldb", ".chk", ".lock"
+    ".pf", ".etl", ".evtx", ".ldb", ".chk", ".lock", ".wer",
+    ".edb", ".jfm", ".srd-wal", ".srd-shm", ".mui", ".vdm", ".jsonl",
+    ".o", ".obj", ".pdb", ".idb", ".ipch"
 }
 
 EXCLUDED_FILES = {
-    "log.csv", "fim_system_trace.txt", "desktop.ini", "thumbs.db", 
-    "swapfile.sys", "pagefile.sys", "hiberfil.sys"
+    "log.csv",
+    "fim_system_trace.txt",
+    "desktop.ini",
+    "thumbs.db",
+    "swapfile.sys",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "ntuser.dat",
+    "usrclass.dat",
+    "iconcache.db",
+    "ntuser.dat.log1",
+    "ntuser.dat.log2"
 }
 
 # --- LOGLAMA ---
@@ -72,9 +104,6 @@ def log_system(level, context, message, details=None):
     full_msg = f"[{timestamp}] [{level}] [{context}] {message}"
     if details:
         full_msg += f"\n   >>> DETAILS: {details}"
-
-    print(full_msg)
-
     try:
         with SYS_LOG_LOCK:
             with open(LOG_FILE_SYSTEM, "a", encoding="utf-8") as f:
@@ -105,21 +134,6 @@ ACTION_DELETED = 2
 ACTION_MODIFIED = 3
 ACTION_RENAMED_OLD = 4
 ACTION_RENAMED_NEW = 5
-
-def identify_drive_type(drive_path):
-    try:
-        dtype = win32file.GetDriveType(drive_path)
-        types = {
-            win32file.DRIVE_REMOVABLE: "REMOVABLE",
-            win32file.DRIVE_FIXED: "FIXED",
-            win32file.DRIVE_REMOTE: "NETWORK",
-            win32file.DRIVE_CDROM: "CD-ROM",
-            win32file.DRIVE_RAMDISK: "RAM DISK"
-        }
-        return types.get(dtype, "UNKNOWN")
-    except Exception as e:
-        log_system("ERROR", "DriveType", f"Failed to identify {drive_path}", str(e))
-        return "ERROR"
 
 def is_drive_usable(drive_path):
     handle = None
@@ -186,12 +200,16 @@ def get_metadata(path, is_deleted=False):
 
 # --- LOG FONKSİYONU ---
 def write_data_log(action_str, path, dest_path=None, custom_type=None):
-    global LOG_COUNTER
+    # LOG_COUNTER kullanılmadığı için global tanımı kaldırılmıştır.
     try:
         path_lower = path.lower()
         fname = os.path.basename(path_lower)
         _, ext = os.path.splitext(fname)
 
+        seed_value = time.time_ns()
+        random.seed(seed_value) 
+        unique_id = str(random.randint(100000, 999999)) 
+        
         # 1. Uzantı Kontrolü
         if ext in IGNORED_EXTENSIONS: return
         
@@ -202,10 +220,6 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
         for subpath in EXCLUDED_SUBPATHS:
             if subpath.lower() in path_lower:
                 return
-
-        # 4. Klasör Adı Kontrolü (Tekil klasör isimleri için)
-        path_parts = set(path_lower.replace("\\", "/").split("/"))
-        if not path_parts.isdisjoint(EXCLUDED_DIRS): return
 
         ts = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
         
@@ -246,11 +260,10 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
                                              "Machine", "IP", "Owner"])
                         
                         writer.writerow([
-                            LOG_COUNTER, ts, path, meta["type"], msg, evt, 
+                            unique_id, ts, path, meta["type"], msg, evt, 
                             meta["ctime"], meta["atime"], meta["mtime"], meta["size"],
                             HOSTNAME, IP_ADDRESS, meta["owner"]
                         ])
-                        LOG_COUNTER += 1
                 break 
             except PermissionError:
                 time.sleep(0.5)
@@ -382,15 +395,25 @@ def scan_folder_access(folder_path):
         if not os.path.exists(folder_path): return
         write_data_log("ACCESS", folder_path, custom_type="DIRECTORY")
         try: items = os.listdir(folder_path)
-        except: return
+        
+        except PermissionError:
+            log_system("WARNING", "ScanFolder", f"Access Denied: {folder_path}")
+            return
+        except Exception as e:
+            log_system("ERROR", "ScanFolder_ListDir", str(e), folder_path)
+            return
 
         limit = 0
         for item in items:
             if limit > 50: break
-            full_path = os.path.join(folder_path, item)
-            write_data_log("ACCESS", full_path, custom_type="FILE")
-            limit += 1
-    except: pass
+            try:
+                full_path = os.path.join(folder_path, item)
+                write_data_log("ACCESS", full_path, custom_type="FILE")
+                limit += 1
+            except Exception as loop_e:
+                log_system("ERROR", "ScanFolder_Loop", str(loop_e), item)
+    except Exception as e:
+        log_system("ERROR", "ScanFolder_Main", str(e), folder_path)
 
 # --- MAIN ---
 if __name__ == "__main__":
@@ -401,8 +424,6 @@ if __name__ == "__main__":
     
     print(f"[*] Target Drive: {target_drive}")
     print(f"[*] Logs will be saved to: {LOG_FILE_DATA}")
-    
-    dtype = identify_drive_type(target_drive)
     
     if is_drive_usable(target_drive):
         t = threading.Thread(target=monitor_drive, args=(target_drive,), daemon=True)
@@ -418,8 +439,7 @@ if __name__ == "__main__":
         while True:
             current = get_active_explorer_path()
             if current and current != last_path:
-                if current.upper().startswith(target_drive.upper()):
-                    scan_folder_access(current)
+                scan_folder_access(current)
                 last_path = current
             time.sleep(0.5)
             

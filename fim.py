@@ -46,6 +46,10 @@ EXCLUDED_SUBPATHS = [
     r"appdata\roaming\code\user\globalstorage",     
     r"appdata\roaming\code\gpu",
     r"appdata\local\google\drivefs",
+    r"appdata\local\microsoft",
+    r"appdata\local\packages",
+    r"appdata\local\google",
+    r"appdata\roaming\microsoft\office",
     r"appdata\local\gitkrakencli",
     r"appdata\local\nvidia corporation\glcache",
     r"appdata\roaming\microsoft\windows\recent",
@@ -58,6 +62,7 @@ EXCLUDED_SUBPATHS = [
     r"windows\systemtemp",
     r"appdata\local\temp",
     r"windows\system32\winevt\logs",
+    r"windows\system32\tasks",
     r"windows\system32\config",
     r"microsoftwindows.client.cbs",
     r"softwareprotectionplatform",
@@ -66,6 +71,7 @@ EXCLUDED_SUBPATHS = [
     r"windows defender\scans",
     r"programdata\microsoft\windows defender",
     r"usoprivate",
+    r"program files\windowsapps",
     r"$recycle.bin",
     r"system volume info",
     r"perflogs",
@@ -255,7 +261,7 @@ def write_data_log(action_str, path, dest_path=None, custom_type=None):
                     with open(LOG_FILE_DATA, "a", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
                         if not file_exists:
-                            writer.writerow(["No", "Date", "Path", "Type", "Message", "Event", 
+                            writer.writerow(["ID", "Date", "Path", "Type", "Message", "Event", 
                                              "Created", "Accessed", "Modified", "Size", 
                                              "Machine", "IP", "Owner"])
                         
